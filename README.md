@@ -9,7 +9,7 @@
 - 电脑端 0.7.5 / 手机端 0.9.4：内部名字改成 SuanNIAO。
   - 电脑端：主界面 `SuanNIAO.exe`、后台 `SuanNIAO-core.exe`，数据文件夹 `%APPDATA%\SuanNIAO`；单实例的互斥量、托盘窗口类、开机自启（注册表 Run 里的 `SuanNIAO`）、排查用的环境变量（`SUANNIAO_TRACE`、`SUANNIAO_DRYRUN`）也换了名字。
   - 从旧版更新：第一次打开新版主界面时，关掉还开着的旧主界面（PhonePad.exe），让旧后台（phonepad-core.exe）退出，把 `%APPDATA%\PhonePad` 整个改名成 `%APPDATA%\SuanNIAO`，开着的开机自启换成指向新后台。新后台先启动时（比如开机自启）也会搬数据文件夹。旧后台没退出、文件夹改不了名时复制一份，旧文件夹留着。
-  - 手机端：包名从 `dev.phonepad` 改成 `dev.suanniao`。系统把它当成另一个 App，不能覆盖旧版：要另外装、重新给权限、重新选电脑；旧 App 的语音模型在 `/sdcard/Android/data/dev.phonepad/files/models`，可以用 `adb shell cp -r` 复制到新包名的目录下（见「本地语音识别」）。
+  - 手机端：包名从 `dev.phonepad` 改成 `dev.suanniao`。系统把它当成另一个 App，不能覆盖旧版：要另外装、重新给权限、重新选电脑；旧 App 的语音模型在 `/sdcard/Android/data/dev.phonepad/files/models`，可以用 `adb shell cp -r` 复制到新包名的目录下（见「本地语音识别」）。两个都是调试版时，设置（选好的电脑、布局、语音设置）也能带过去：新 App 不能开着（开着就先 `adb shell am force-stop dev.suanniao`，不然它内存里的空设置会盖掉复制过去的），再 `adb shell "run-as dev.phonepad cat shared_prefs/phonepad.xml | run-as dev.suanniao sh -c 'mkdir -p shared_prefs && cat > shared_prefs/suanniao.xml'"`；权限可以用 `adb shell pm grant dev.suanniao android.permission.BLUETOOTH_CONNECT` 直接给（`RECORD_AUDIO`、`POST_NOTIFICATIONS` 同样）。
 - 电脑端 0.7.4：更新以后再打开蒜鸟，开着的旧版窗口会自己关掉、换成新版。以前只会把旧窗口调出来，要先手动关掉旧窗口才用得上新版。
   - 每个主界面在自己的窗口上挂着版本号，属性名和单实例的互斥量同名，测试副本换掉这个名字就碰不到正在用的窗口。
   - 0.7.3 以前的窗口没挂版本号，按标题「蒜鸟」、窗口类和程序所在的文件夹认。
@@ -227,3 +227,4 @@ status.json 里和手机有关的：`device`、`phoneModel`、`phoneApp`、`conf
 | 触控板顺滑（0.7.2） | 在手机触控板上注入手势（直线滑动、轻点后 0.5 秒 / 0.15 秒接着滑、快速左右来回划），后台只记录不动鼠标。同一段真实蓝牙时序：以前 13 段滑动段段都有停顿，按 120 Hz 算停顿帧 51/404，每帧走的距离忽大忽小（变异系数 0.52）；现在 13 段里 10 段一帧不停，停顿帧 5/372，变异系数 0.16。剩下的停顿是蓝牙偶尔七八十到一百五十毫秒什么都不送，指针停一下再接着走，不跳。延迟（指针比蓝牙最快送到时多等的时间）：以前中位 29 毫秒、慢的一成超过 121 毫秒，现在中位 53 毫秒、慢的一成超过 62 毫秒。发布版实测：12 段直线滑动 10 段一帧不停，延迟中位 58 毫秒。后台单元测试 14 个全过（新加回放 5 个） |
 | 新版换掉旧窗口（0.7.4） | 隔离副本：开着没挂版本号的 0.7.3 或挂了 0.7.3 的窗口时打开 0.7.4，旧窗口 0.05 秒内关掉，新版接上；开着 0.7.4 时再开 0.7.3 或 0.7.4，后开的自己退出，原窗口不动；前台一直没变。真机：用户开着的 0.7.3 窗口 0.07 秒后关掉，后台跟着换成 0.7.4，手机 1 秒后连回 |
 | 内部改名 SuanNIAO（0.7.5） | 真机从旧版换过来：打开新的 SuanNIAO.exe，开着的 PhonePad.exe 窗口和 phonepad-core.exe 0.15 秒内都退出，新后台 0.24 秒后启动；`%APPDATA%\PhonePad` 整个改名成 `%APPDATA%\SuanNIAO`，配置、日志、备份都在；开机自启从 Run 里的 `PhonePad` 换成指向新后台的 `SuanNIAO`；手机（旧 App 0.9.3）1.2 秒后连回，配置回执 1/1。单元测试配置 29 个、后台 14 个、主界面 2 个全过 |
+| 手机换新包名（0.9.4） | 真机：另外装上 `dev.suanniao` 调试版，从旧 App 复制设置（校验值一致）、语音模型和测试录音（10 个文件 md5 一致），给好蓝牙、麦克风、通知权限；新 App 不用重新选电脑，自己连上（App 0.9.4，配置回执对上），语音模型 x-asr-480ms 5 秒加载完；卸掉旧 App 后连接不断 |
