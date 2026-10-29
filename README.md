@@ -4,7 +4,24 @@
 
 把小米 13 变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接；语音在手机上识别（本地模型，不用联网），只把文字发给电脑。方案见上一级目录的 `方案.md`。
 
-## 当前版本：电脑端 0.7.6 · 手机端 0.9.5
+## 当前版本：电脑端 0.7.9 · 手机端 0.9.8
+
+- 电脑端 0.7.9 / 手机端 0.9.8：检查更新，安装程序换成自己做的。仓库改成了公开的（Release 不用登录就能下载）。
+  - 每次发版 `release.yml` 在 Release 里多放一个 `latest.json`：两端的版本号、文件名、下载地址、大小、SHA-256，`notes` 是 `CHANGELOG.md` 这一版那段里顶格的「- 」，`pc.notes` / `android.notes` 是写在「电脑端…」「手机端…」下面的（「两端一起…」下面的两端都算）。两端读 `https://github.com/drhhhao/SuanNIAO/releases/latest/download/latest.json`。
+  - 电脑：`pc/update`（WinHTTP 读 latest.json、下载、BCrypt 算 SHA-256；查到的结果和用户的选择记在 `%APPDATA%\SuanNIAO\update.json`，后台和主界面共用，读写用命名互斥量排队）。后台启动 1 分钟后查一次，之后每 6 小时（没查成 30 分钟后再试）；主界面没开着时托盘气泡提示一次（每个版本一次），托盘菜单里有「更新到 x」（打开 `SuanNIAO.exe --show-update`）。主界面打开 3 秒后查（上次超过 1 小时），查到没提示过的版本就弹更新窗口；「以后再说」一天内不再自己弹，「跳过这个版本」只是不再提醒。「立即更新」把安装包下到 `%TEMP%\SuanNIAO-update\`，大小和 SHA-256 对上才运行 `安装包 --update --dir 主界面所在的文件夹`，主界面先存好改动再退出。
+  - 安装包：`pc/setup` 的启动程序 `SuanNIAO-Setup.exe` 后面接上 LZMS 压缩的两个 exe（`suanniao-pack` 打包，打完解开核对）。双击后解到 `%TEMP%\SuanNIAO-Setup-进程号\`，运行里面的 `SuanNIAO.exe --setup`，结束后删掉。安装界面是主界面程序里的 `SetupWindow`（`pc/ui/src/setup.rs`），和蒜鸟一个样子；参数 `--update`（不问、直接装，装好打开新版）、`--dir 文件夹`、`--silent`、`--no-desktop`。登记的 AppId 和 0.7.6 的 Inno Setup 安装包一样，装着 0.7.6 的直接覆盖、卸载入口换成新的（`SuanNIAO.exe --uninstall [--silent] [--remove-data]`）。
+  - 装、更新：关掉那个文件夹里开着的主界面和后台 → 两个 exe 先复制成 `.new` 再改名盖过去（还被占着就把旧的改名让开）→ 开始菜单（和桌面）放「蒜鸟」→ 写卸载登记 → 后台原来开着的话再打开。卸载：关掉 → 删快捷方式（只删指着这个文件夹的）、程序、开机自启（只删指着这个文件夹的）、登记 → 勾了的话删设置 → 退出后由 cmd 删掉自己。
+  - 测试安装程序：环境变量 `SUANNIAO_SETUP_SANDBOX=文件夹` 把开始菜单、桌面换到这个文件夹里，注册表换到 `HKCU\Software\SuanNIAO-SetupTest`，不打开装好的程序，窗口放在屏幕外面。测试检查更新：主界面 `SUANNIAO_UPDATE_URL=http://127.0.0.1:端口/latest.json`（这时也认 http 的下载地址）。
+  - 手机：`Updater.kt`，打开 App 时查（离上次超过 6 小时），`⋯` 菜单里「检查更新」、「自动检查更新」。安装包下到 App 缓存（断了接着下），核对大小、SHA-256、包名、版本、签名后交给系统安装器（`ApkProvider`）。新加 `INTERNET`、`ACCESS_NETWORK_STATE`、`REQUEST_INSTALL_PACKAGES` 权限。调试版的签名和正式版不一样，不给下载，只给「去网页下载」。
+
+- 电脑端 0.7.8 / 手机端 0.9.7：剪贴板同步加上图片，只从电脑到手机（手机上很多 App 复制图片不进系统剪贴板，反过来用处不大）。
+  - 电脑：剪贴板里没有文字、有图片（注册格式 `PNG`，或者 `CF_DIB` / `CF_DIBV5`）时，`pc/core/src/clipimage.rs` 编成不超过 512 KB 的文件（实测蓝牙约 55 KB/s；分块 16 KB 最快，48 KB 反而慢）：现成的 PNG 够小就原样发，位图编成 PNG（32 位透明度全 0 的当成不透明），放不下就 JPEG（质量 85，透明处垫白），还放不下就按面积缩小。同一张（按原始内容的指纹）不重发。
+  - 分块发：`clipImg`（id、mime、size、w、h）→ 每块 16 KB 原始字节的 `clipImgPart`（Base64）→ `clipImgEnd`；块小，传的时候心跳回复、配置推送也插得进去。传的途中剪贴板又变了发 `clipImgCancel`。日志里记编码耗时、传输秒数和速度。
+  - 手机：收进缓存的 `clip/` 文件夹，收齐、大小对上了才把 `content://dev.suanniao.clip/文件名` 放进剪贴板（标签和文字一样是「蒜鸟·电脑剪贴板」，不会发回电脑）。`ClipProvider` 只读、不导出，粘贴的 App 靠剪贴板的临时授权读；留最新两张，更早的删掉。蒜鸟在前台时顶上提示接收中 / 已放好。
+
+- 电脑端 0.7.7 / 手机端 0.9.6：手机和电脑同步剪贴板里的文字（设置里「和手机同步剪贴板」，`settings.clipboardSync`，默认开，推给手机的配置里是 `clipSync`）。消息都是 `{"t":"clip","s":文字}`，最多 256 KB。
+  - 手机 → 电脑：安卓只让前台、拿着焦点的 App 读剪贴板，所以手机在蒜鸟拿到焦点（`onWindowFocusChanged`）、收到配置（刚连上）、在蒜鸟里复制时看一眼剪贴板描述（不读内容，系统不弹「已读取剪贴板」）：时间戳和上次发过的（`clip_sent_stamp`）不一样、是文字、没标敏感、不是电脑发来的，才读出来发过去（`ClipSync.kt`）。电脑放进剪贴板（不带标记，进 Win+V 历史）以后再按粘贴键，和这条按键消息走同一条连接、排在后面，所以粘的就是手机上复制的。
+  - 电脑 → 手机：后台用只收消息的窗口登记 `AddClipboardFormatListener`（`pc/core/src/clipsync.rs`），剪贴板变了、是文字就发给手机，手机放进剪贴板（标签「蒜鸟·电脑剪贴板」，回到前台时认出来不再发回去）。带 `ExcludeClipboardContentFromMonitorProcessing`、`CanIncludeInClipboardHistory = 0`、`CanUploadToCloudClipboard = 0` 的不发：密码管理器复制的密码，和语音输入借剪贴板时写的字。手机发来的写进剪贴板后记下序号，那次变化不发回去；和上一次同步的一样也不发。
 
 - 电脑端 0.7.6 / 手机端 0.9.5：发版改成两端各一个安装包，下载下来装上就能用。
   - 电脑端：`SuanNIAO-PC-版本-Setup.exe`（Inno Setup 做的，脚本 `pc/installer/SuanNIAO.iss`）。只给当前用户装，装在 `%LOCALAPPDATA%\Programs\SuanNIAO`，不用管理员权限；开始菜单里有「蒜鸟」，桌面快捷方式可选，装完可以直接打开。更新就是装新版的安装包，设置都留着。
@@ -123,6 +140,7 @@ adb shell chmod -R 777 /sdcard/Android/data/dev.suanniao/files/models
   - 手机上把 wav 当成对着语音按钮说话（只在调试版里有）：先把 wav 推到 `/sdcard/Android/data/dev.suanniao/files/test/`，再
     `adb shell am start -n dev.suanniao/.MainActivity -f 0x20000000 --es debugWav /sdcard/Android/data/dev.suanniao/files/test/vibe.wav`（加 `--ez debugLatch true` 按锁定的方式说）
   - 调试版的其他测试入口（同样用 `am start` 传）：`--ez debugOnboarding true`（第一次打开时的教程）、`--ei debugTutorial 页码`（从第几页打开教程，0 起）、`--ez debugGuide true`、`--ez debugMenu true`、`--ez debugPending true`、`--el debugDimMs 毫秒`、`--es debugConfigFile 文件`。
+  - 检查更新：`--es debugUpdateUrl http://电脑的地址/latest.json`（空字符串换回 GitHub，马上查一次），加 `--ez debugUpdateAuto true` 当成打开 App 时的自动检查，加 `--ez debugUpdateInstall true` 让调试版也下载、安装（装的得是同一台电脑打的、versionCode 更大的调试版）。
   - 往电脑上打字的测试之前，先用 `tools\type_target.ps1` 开测试窗口，并用 `tools\foreground.ps1` 确认它在前台，别打进别的窗口。
 
 ## 目录
@@ -132,8 +150,9 @@ adb shell chmod -R 777 /sdcard/Android/data/dev.suanniao/files/models
 | `pc/config` | 电脑端共用的配置：布局、映射、方案、设置；动作序列文字格式、预设、导出导入、从遥控器映射软件导入（Rust） |
 | `pc/core` | 后台：托盘、蓝牙串口服务、执行动作、剪贴板借用和还原、切换方案的桌面通知 |
 | `pc/ui` | 主界面（Rust + Slint） |
-| `pc/assets` | 图标、安装界面「安装完成」页的竖图 `installer-side.png`（都由 `tools/logo/make_icons.py` 生成）；`app.rc.in` + `resource.rs` 是两个 exe 共用的资源模板（图标、版本信息），由各自的 build.rs 填好编进去 |
-| `pc/installer` | 电脑端安装程序的脚本（Inno Setup）和安装界面的中文 |
+| `pc/update` | 检查更新：读 latest.json、下载安装包、核对 SHA-256，`update.json` 的读写（后台和主界面共用） |
+| `pc/setup` | 安装包的启动程序 `SuanNIAO-Setup.exe` 和打包工具 `suanniao-pack`；安装界面本身在 `pc/ui/src/setup.rs` |
+| `pc/assets` | 图标（由 `tools/logo/make_icons.py` 生成）；`app.rc.in` + `resource.rs` 是几个 exe 共用的资源模板（图标、版本信息），由各自的 build.rs 填好编进去 |
 | `android` | 手机 App（Kotlin；第三方依赖只有 sherpa-onnx） |
 | `.github/workflows` | 自动发版的流水线 |
 | `models` | 本地语音模型（打进手机安装包、推到手机上用）和测试音频；太大，不进 GitHub 仓库 |
@@ -146,7 +165,8 @@ adb shell chmod -R 777 /sdcard/Android/data/dev.suanniao/files/models
 |---|---|
 | `config.json` | 当前配置 |
 | `status.json` | 后台运行状态（连接、手机信息、同步回执、配置错误……） |
-| `ui.json` | 主界面自己的小状态（问没问过开机自启 `autostartAsked`、看没看过使用教程 `tutorialSeen`） |
+| `ui.json` | 主界面自己的小状态（问没问过开机自启 `autostartAsked`、看没看过使用教程 `tutorialSeen`、上次打开的版本 `lastVersion`） |
+| `update.json` | 检查更新：上次查的时间和结果、自动检查开没开、跳过的版本、点「以后再说」的时间、主动提醒过的版本 |
 | `logs\core.log` | 后台日志（5 MB 轮转，留 5 个旧的） |
 | `backups\` | 每天的自动备份 `config-auto-日期.json`（留 7 天），导入前的备份 |
 | `config.broken-时间.json` | 读坏的配置文件，原样留着 |
@@ -160,7 +180,8 @@ cd pc
 cargo build --release
 ```
 
-安装包（要先装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)）：编好上面两个程序后运行 `ISCC /DAppVersion=0.7.6 pc\installer\SuanNIAO.iss`，生成在 `pc\target\installer\`。
+安装包：`cargo build --release` 会顺带编好启动程序 `SuanNIAO-Setup.exe` 和打包工具，再运行
+`target\release\suanniao-pack.exe target\release\SuanNIAO-Setup.exe target\installer\SuanNIAO-PC-版本-Setup.exe target\release\SuanNIAO.exe target\release\SuanNIAO-core.exe`。
 
 开发时可以用 `cargo build --profile fastrel`（不做 LTO，增量编译，生成在 `pc\target\fastrel\`）。单元测试：`cargo test`（后台的剪贴板测试在自己建的窗口站里跑，不会动到正在用的剪贴板）。
 

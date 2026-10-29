@@ -553,6 +553,12 @@ class LinkService : Service() {
                 if (changed) updateNotification()
                 if (listener == null) ackConfig(msg)
             }
+            "clip" -> if (ClipSync.enabled(lastConfig)) ClipSync.receive(this, msg.optString("s"))
+            "clipImg" -> if (ClipSync.enabled(lastConfig)) ClipSync.imageStart(this, msg)
+            "clipImgPart" -> ClipSync.imagePart(msg)
+            "clipImgCancel" -> ClipSync.imageCancel(msg)
+            // 界面看 ok 提示一声
+            "clipImgEnd" -> ClipSync.imageEnd(this, msg)?.let { msg.put("ok", it) }
         }
         listener?.onLinkMessage(msg)
     }

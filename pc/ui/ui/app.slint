@@ -506,9 +506,11 @@ component TitleButton inherits Rectangle {
     in property <bool> outside-pressed: false;
     // 这一格比按钮宽出来多少：关闭按钮那格一直伸到窗口右边，最大化时鼠标甩到屏幕右上角也点得到
     in property <length> extra-right: 0px;
+    // 安装界面正在装的时候关闭按钮点不了
+    in property <bool> enabled: true;
     callback clicked();
-    property <bool> hovered: area.has-hover || root.outside-hover;
-    property <bool> down: area.pressed || root.outside-pressed;
+    property <bool> hovered: root.enabled && (area.has-hover || root.outside-hover);
+    property <bool> down: root.enabled && (area.pressed || root.outside-pressed);
     width: 34px + root.extra-right;
     Rectangle {
         x: 1px;
@@ -521,9 +523,11 @@ component TitleButton inherits Rectangle {
             source: root.icon;
             tint: root.hovered && root.danger ? #ffffff : root.hovered ? Theme.fg : root.active ? Theme.fg2 : Theme.mut;
             size: 16px;
+            opacity: root.enabled ? 1 : 0.35;
         }
     }
     area := TouchArea {
+        enabled: root.enabled;
         clicked => {
             root.clicked();
         }
@@ -1248,11 +1252,14 @@ component SettingRow inherits Rectangle {
     in property <string> note;
     // 这一行现在用不上（比如布局里没有语音输入框）：淡一点
     in property <bool> dim: false;
+    // 卡片里的第一行（上面没有卡片标题）：不画分隔线，卡片自己有边框
+    in property <bool> first: false;
     min-height: 54px;
     Rectangle {
         height: 1px;
         y: 0;
         background: Theme.line;
+        visible: !root.first;
     }
     HorizontalLayout {
         padding-left: 16px;
@@ -3207,6 +3214,53 @@ component ToolButton inherits Rectangle {
     }
 }
 
+// 进度条：青柠色的一段顺滑地变长（下载更新、安装）
+component ProgressBar inherits Rectangle {
+    in property <float> value;
+    height: 8px;
+    border-radius: 4px;
+    background: Theme.line;
+    Rectangle {
+        x: 0;
+        width: root.value <= 0 ? 0px : Math.max(parent.height, Math.min(1, root.value) * parent.width);
+        border-radius: 4px;
+        background: Theme.lime-dot;
+        animate width { duration: 260ms; easing: ease-out; }
+    }
+}
+
+// 红色按钮（卸载）：和确认框里删东西的按钮一个样子
+component DangerButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 36px;
+    min-width: 96px;
+    border-radius: 10px;
+    background: area.pressed ? Theme.red.darker(0.2) : area.has-hover && root.enabled ? Theme.red.darker(0.1) : Theme.red;
+    opacity: root.enabled ? 1 : 0.35;
+    animate background { duration: 150ms; }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            text: root.text;
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 // 盖住整个窗口的对话框底板：深色半透明背景，中间一张卡片，出现时淡入、轻轻上移。
 // Esc 关掉（dismiss）；dismissable 的（不会丢东西的）点遮罩也能关
 component DialogCard inherits Rectangle {
@@ -3338,6 +3392,247 @@ component ConfirmDialog inherits DialogCard {
                     clicked => {
                         root.accept();
                     }
+                }
+            }
+        }
+    }
+}
+
+// 有新版本：版本号、这次更新了什么、手机 App 是不是也有新版。
+// 立即更新：下载电脑端的安装包（进度条），下载好了蒜鸟自己关掉、打开安装程序，装好以后再打开（ui/src/update.rs）
+component UpdateDialog inherits DialogCard {
+    in property <string> current;
+    in property <string> version;
+    // 「12.3 MB · 10 月 30 日发布」
+    in property <string> detail;
+    in property <[string]> notes;
+    // 没列出来的还有几条
+    in property <int> more;
+    // 手机 App 也有新版时的一句话，空的就不显示
+    in property <string> phone;
+    // 0 看看，1 正在下载，2 没成（下载出错），3 下载好了、正在打开安装程序
+    in property <int> stage;
+    in property <float> progress;
+    in property <string> progress-text;
+    in property <string> error;
+    callback update-now();
+    callback later();
+    callback skip();
+    callback cancel-download();
+    callback open-page();
+    card-width: 520px;
+    card-height: Math.min(620px, body.preferred-height);
+    // 正在下载时点遮罩、按 Esc 不关（要关点「取消」）
+    dismissable: root.stage == 0 || root.stage == 2;
+    dismiss => {
+        if (root.stage == 0 || root.stage == 2) {
+            root.later();
+        }
+    }
+    body := VerticalLayout {
+        alignment: start;
+        padding: 24px;
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 14px;
+            Rectangle {
+                width: 52px;
+                height: 52px;
+                border-radius: 14px;
+                background: Theme.lime;
+                Image {
+                    source: @image-url("../../assets/logo.svg");
+                    width: 36px;
+                    height: 36px;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 7px;
+                Text {
+                    text: root.stage == 1 ? "正在下载蒜鸟 " + root.version : root.stage == 2 ? "更新没有完成" : root.stage == 3 ? "正在打开安装程序" : "蒜鸟有新版本了";
+                    color: Theme.fg;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    Chip {
+                        text: root.current;
+                    }
+                    Icon {
+                        source: @image-url("../icons/right.svg");
+                        tint: Theme.mut;
+                        size: 13px;
+                    }
+                    Chip {
+                        text: root.version;
+                        tone: 1;
+                        dot: true;
+                    }
+                    if root.detail != "": Text {
+                        text: "  " + root.detail;
+                        color: Theme.mut;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        if root.stage != 2: Rectangle {
+            background: Theme.soft;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.line;
+            VerticalLayout {
+                padding: 14px;
+                padding-top: 12px;
+                spacing: 7px;
+                Text {
+                    text: "这次更新了";
+                    color: Theme.mut;
+                    font-size: 11.5px;
+                    font-weight: 600;
+                }
+                for note in root.notes: HorizontalLayout {
+                    spacing: 9px;
+                    VerticalLayout {
+                        alignment: start;
+                        padding-top: 7px;
+                        Rectangle {
+                            width: 5px;
+                            height: 5px;
+                            border-radius: 2.5px;
+                            background: Theme.lime-dot;
+                        }
+                    }
+                    WrapText {
+                        text: note;
+                        horizontal-stretch: 1;
+                    }
+                }
+                if root.notes.length == 0: Muted {
+                    text: "这次没写更新说明。";
+                }
+                if root.more > 0: Muted {
+                    text: "……还有 " + root.more + " 条，网页上看得到全部";
+                    font-size: 12px;
+                }
+            }
+        }
+        if root.phone != "" && root.stage == 0: HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: start;
+                padding-top: 1px;
+                Icon {
+                    source: @image-url("../icons/phone.svg");
+                    tint: Theme.fg2;
+                    size: 15px;
+                }
+            }
+            Muted {
+                text: root.phone;
+                color: Theme.fg2;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.stage == 1 || root.stage == 3: VerticalLayout {
+            spacing: 8px;
+            ProgressBar {
+                value: root.stage == 3 ? 1 : root.progress;
+            }
+            Muted {
+                text: root.progress-text;
+                font-size: 12px;
+            }
+        }
+        if root.stage == 2: Rectangle {
+            background: Theme.warn-bg;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.warn-line;
+            HorizontalLayout {
+                padding: 14px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: start;
+                    padding-top: 1px;
+                    Icon {
+                        source: @image-url("../icons/warn.svg");
+                        tint: Theme.warn-fg;
+                        size: 16px;
+                    }
+                }
+                WrapText {
+                    text: root.error;
+                    color: Theme.warn-fg;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            // 跳过：这个版本不再提醒（「关于」里还看得到）
+            if root.stage == 0: Rectangle {
+                width: skip-text.preferred-width;
+                skip-text := Text {
+                    text: "跳过这个版本";
+                    color: skip-area.has-hover ? Theme.fg2 : Theme.mut;
+                    font-size: 12.5px;
+                    vertical-alignment: center;
+                }
+                skip-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.skip();
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if root.stage == 0: GhostButton {
+                text: "以后再说";
+                clicked => {
+                    root.later();
+                }
+            }
+            if root.stage == 0: PrimaryButton {
+                text: "立即更新";
+                has-icon: true;
+                icon: @image-url("../icons/download.svg");
+                clicked => {
+                    root.update-now();
+                }
+            }
+            if root.stage == 1: GhostButton {
+                text: "取消";
+                clicked => {
+                    root.cancel-download();
+                }
+            }
+            if root.stage == 2: GhostButton {
+                text: "去网页下载";
+                has-icon: true;
+                icon: @image-url("../icons/globe.svg");
+                clicked => {
+                    root.open-page();
+                }
+            }
+            if root.stage == 2: GhostButton {
+                text: "关闭";
+                clicked => {
+                    root.later();
+                }
+            }
+            if root.stage == 2: PrimaryButton {
+                text: "重试";
+                has-icon: true;
+                icon: @image-url("../icons/refresh.svg");
+                clicked => {
+                    root.update-now();
                 }
             }
         }
@@ -4774,6 +5069,7 @@ component SettingsPage inherits Page {
     in-out property <float> send-delay;
     in-out property <bool> enter-after;
     in-out property <int> input-mode;
+    in-out property <bool> clip-sync;
     in-out property <int> double-click-ms;
     in-out property <int> long-press-ms;
     in-out property <int> repeat-delay-ms;
@@ -4968,6 +5264,28 @@ component SettingsPage inherits Page {
                                     }
                                     plus => {
                                         root.send-delay = Math.min(3, Math.round(root.send-delay * 10 + 1) / 10);
+                                        root.changed();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        alignment: start;
+                        CardHead {
+                            title: "剪贴板";
+                            icon: @image-url("../icons/paste.svg");
+                        }
+                        SettingRow {
+                            label: "和手机同步剪贴板";
+                            note: "电脑上复制的文字和图片，手机上能直接粘贴；手机上复制的文字，回到蒜鸟后电脑上就能粘贴（图片只从电脑到手机）。密码管理器复制的密码不同步";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle {
+                                    checked <=> root.clip-sync;
+                                    toggled => {
                                         root.changed();
                                     }
                                 }
@@ -5257,6 +5575,16 @@ component AboutPage inherits Page {
     in property <string> phone-app;
     in property <string> phone-model;
     callback open-folder();
+    // 更新（ui/src/update.rs）：状态标签（色块同 Chip）、下面一行小字（上次检查的时间、出错原因）
+    in property <string> update-status;
+    in property <int> update-tone;
+    in property <string> update-note;
+    in property <bool> update-available;
+    in property <bool> update-checking;
+    in-out property <bool> update-auto: true;
+    callback check-update();
+    callback show-update();
+    callback update-auto-changed(bool);
     VerticalLayout {
         alignment: start;
         spacing: 16px;
@@ -5342,6 +5670,65 @@ component AboutPage inherits Page {
                     HorizontalLayout {
                         alignment: start;
                         AboutSlint { }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            Card {
+                width: 560px;
+                VerticalLayout {
+                    CardHead {
+                        title: "更新";
+                        icon: @image-url("../icons/refresh.svg");
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Chip {
+                                text: root.update-status;
+                                tone: root.update-tone;
+                                dot: root.update-available;
+                            }
+                        }
+                    }
+                    SettingRow {
+                        label: root.update-available ? "新版本已经发布" : "检查更新";
+                        note: root.update-note;
+                        VerticalLayout {
+                            alignment: center;
+                            if root.update-available: PrimaryButton {
+                                text: "查看更新";
+                                clicked => {
+                                    root.show-update();
+                                }
+                            }
+                            if !root.update-available: GhostButton {
+                                small: true;
+                                text: root.update-checking ? "正在检查…" : "检查更新";
+                                enabled: !root.update-checking;
+                                has-icon: true;
+                                icon: @image-url("../icons/refresh.svg");
+                                clicked => {
+                                    root.check-update();
+                                }
+                            }
+                        }
+                    }
+                    SettingRow {
+                        label: "自动检查更新";
+                        note: "蒜鸟开着时每隔几个小时看一下 GitHub 上有没有发布新版本，有就提示你。下载、安装都要你点了才做。";
+                        VerticalLayout {
+                            alignment: center;
+                            Toggle {
+                                checked <=> root.update-auto;
+                                toggled => {
+                                    root.update-auto-changed(root.update-auto);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -8870,6 +9257,7 @@ export component AppWindow inherits Window {
     in-out property <float> send-delay;
     in-out property <bool> enter-after;
     in-out property <int> input-mode;
+    in-out property <bool> clip-sync;
     in-out property <int> double-click-ms;
     in-out property <int> long-press-ms;
     in-out property <int> repeat-delay-ms;
@@ -8880,6 +9268,38 @@ export component AppWindow inherits Window {
     in-out property <bool> autostart;
     callback settings-changed();
     callback autostart-changed(bool);
+
+    // 检查更新（ui/src/update.rs）：「关于」里的状态，侧边栏「关于」上的「新」字（有没跳过的新版本），更新窗口
+    in property <bool> update-available;
+    in property <bool> update-badge;
+    in property <string> update-status;
+    in property <int> update-tone;
+    in property <string> update-note;
+    in property <bool> update-checking;
+    in-out property <bool> update-auto: true;
+    in property <bool> update-open;
+    changed update-open => {
+        if (!self.update-open) {
+            root.restore-focus();
+        }
+    }
+    in property <string> update-version;
+    in property <string> update-detail;
+    in property <[string]> update-notes;
+    in property <int> update-more;
+    in property <string> update-phone;
+    in property <int> update-stage;
+    in property <float> update-progress;
+    in property <string> update-progress-text;
+    in property <string> update-error;
+    callback check-update();
+    callback show-update();
+    callback update-auto-changed(bool);
+    callback update-now();
+    callback update-later();
+    callback update-skip();
+    callback update-cancel();
+    callback update-page();
 
     // 布局页的手机画面多高：按窗口高度算，整部手机一屏放得下（顶栏、页面标题、页面标签、上下留白都扣掉）
     property <length> layout-canvas-height: Math.max(440px, Math.min(760px, root.height - 65px - (root.config-broken ? 64px : 0px) - 50px - 70px - 12px - 32px - 12px - 6px));
@@ -8906,7 +9326,7 @@ export component AppWindow inherits Window {
             return x >= root.width - root.window-buttons-width + 34px && x < root.width - root.window-buttons-width + 68px ? 2 : 0;
         }
         // 对话框开着时卡片最高到离窗口顶 30px；顶栏的弹出菜单从 56px 开始
-        if (y >= ((root.confirm-open || root.name-open || root.import-open || root.sequences-open || root.grid-open || root.tutorial-open) ? 30px : 54px)) {
+        if (y >= ((root.confirm-open || root.name-open || root.import-open || root.sequences-open || root.grid-open || root.tutorial-open || root.update-open) ? 30px : 54px)) {
             return 0;
         }
         if (root.inside(x, y, map-pill.absolute-position.x, map-pill.absolute-position.y, map-pill.width, map-pill.height)
@@ -8936,7 +9356,7 @@ export component AppWindow inherits Window {
         width: 100%;
         height: 100%;
         capture-key-pressed(event) => {
-            if (root.confirm-open || root.name-open || root.import-open || root.sequences-open || root.grid-open || root.tutorial-open || Recorder.active) {
+            if (root.confirm-open || root.name-open || root.import-open || root.sequences-open || root.grid-open || root.tutorial-open || root.update-open || Recorder.active) {
                 return reject;
             }
             if (event.modifiers.control && !event.modifiers.alt) {
@@ -9122,7 +9542,7 @@ export component AppWindow inherits Window {
                         nav <=> root.nav;
                         items: [
                             { text: "设置", icon: @image-url("../icons/gear.svg"), badge: "", lime: false },
-                            { text: "关于", icon: @image-url("../icons/info.svg"), badge: "", lime: false },
+                            { text: "关于", icon: @image-url("../icons/info.svg"), badge: root.update-badge ? "新" : "", lime: true },
                         ];
                     }
                 }
@@ -9657,6 +10077,7 @@ export component AppWindow inherits Window {
                                 send-delay <=> root.send-delay;
                                 enter-after <=> root.enter-after;
                                 input-mode <=> root.input-mode;
+                                clip-sync <=> root.clip-sync;
                                 double-click-ms <=> root.double-click-ms;
                                 long-press-ms <=> root.long-press-ms;
                                 repeat-delay-ms <=> root.repeat-delay-ms;
@@ -9698,8 +10119,23 @@ export component AppWindow inherits Window {
                                 folder: root.folder;
                                 phone-app: root.phone-app;
                                 phone-model: root.phone-model;
+                                update-status: root.update-status;
+                                update-tone: root.update-tone;
+                                update-note: root.update-note;
+                                update-available: root.update-available;
+                                update-checking: root.update-checking;
+                                update-auto <=> root.update-auto;
                                 open-folder => {
                                     root.open-folder();
+                                }
+                                check-update => {
+                                    root.check-update();
+                                }
+                                show-update => {
+                                    root.show-update();
+                                }
+                                update-auto-changed(on) => {
+                                    root.update-auto-changed(on);
                                 }
                             }
                         }
@@ -9984,6 +10420,33 @@ export component AppWindow inherits Window {
             root.sequences-close();
         }
     }
+    if root.update-open: UpdateDialog {
+        current: root.version;
+        version: root.update-version;
+        detail: root.update-detail;
+        notes: root.update-notes;
+        more: root.update-more;
+        phone: root.update-phone;
+        stage: root.update-stage;
+        progress: root.update-progress;
+        progress-text: root.update-progress-text;
+        error: root.update-error;
+        update-now => {
+            root.update-now();
+        }
+        later => {
+            root.update-later();
+        }
+        skip => {
+            root.update-skip();
+        }
+        cancel-download => {
+            root.update-cancel();
+        }
+        open-page => {
+            root.update-page();
+        }
+    }
     if root.name-open: NameDialog {
         title: root.name-title;
         note: root.name-note;
@@ -10045,6 +10508,556 @@ export component AppWindow inherits Window {
             icon: @image-url("../icons/win-close.svg");
             danger: true;
             active: root.window-active;
+            clicked => {
+                root.close-window();
+            }
+        }
+    }
+}
+
+// ───────────────────────── 安装界面 ─────────────────────────
+
+// 安装界面左边的步骤：黑色块顺滑地移到正在做的那一步，做完的打勾
+component SetupSteps inherits Rectangle {
+    in property <[{ text: string, icon: image }]> items;
+    in property <int> current;
+    height: root.items.length * 38px - 2px;
+    Rectangle {
+        y: Math.max(0, Math.min(root.items.length - 1, root.current)) * 38px;
+        height: 36px;
+        border-radius: 10px;
+        background: Theme.ink;
+        animate y { duration: Motion.normal; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+    }
+    for it[i] in root.items: step := Rectangle {
+        property <bool> selected: i == root.current;
+        property <bool> done: i < root.current;
+        y: i * 38px;
+        height: 36px;
+        Icon {
+            x: 10px;
+            size: 17px;
+            source: step.done ? @image-url("../icons/check.svg") : it.icon;
+            tint: step.selected ? Theme.ink-fg : step.done ? Theme.lime-dot : Theme.mut;
+            animate tint { duration: 250ms; }
+        }
+        Text {
+            x: 37px;
+            height: parent.height;
+            text: it.text;
+            color: step.selected ? Theme.ink-fg : step.done ? Theme.fg2 : Theme.mut;
+            font-size: 13.5px;
+            vertical-alignment: center;
+            animate color { duration: 250ms; }
+        }
+    }
+}
+
+// 装好了（青柠色圆里一个勾）、出错了（橙色圆里一个感叹号）：出现时勾轻轻放大
+component ResultMark inherits Rectangle {
+    in property <bool> warn: false;
+    property <bool> shown: false;
+    width: 56px;
+    height: 56px;
+    border-radius: 28px;
+    background: root.warn ? Theme.warn-bg : Theme.lime;
+    Icon {
+        source: root.warn ? @image-url("../icons/warn.svg") : @image-url("../icons/check.svg");
+        tint: root.warn ? Theme.warn-fg : Theme.lime-fg;
+        size: root.shown ? 28px : 14px;
+        animate size { duration: 320ms; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+    }
+    init => {
+        root.shown = true;
+    }
+}
+
+// 安装、更新、卸载蒜鸟的窗口（`SuanNIAO.exe --setup` / `--uninstall`，见 ui/src/setup.rs）。
+// 和主界面一个样子：左边浅灰的一栏（小鸟、步骤），右边白底；系统的标题栏换成自己画的，只有最小化和关闭
+export component SetupWindow inherits Window {
+    // 别叫「蒜鸟」：新版主界面靠这个标题认出没挂版本号的旧主界面（win::running_ui）
+    title: root.mode == 2 ? "卸载蒜鸟" : "安装蒜鸟";
+    icon: @image-url("../../assets/icon.png");
+    width: 720px;
+    height: 460px;
+    default-font-family: "Microsoft YaHei UI";
+    background: Theme.win;
+    forward-focus: keys;
+
+    // 0 安装，1 更新（主界面下载好新版以后打开的：不问，直接装），2 卸载
+    in property <int> mode;
+    // 0 选项（卸载是确认），1 正在装，2 好了，3 出错了
+    in property <int> page;
+    in property <string> version;
+    // 要装到的文件夹里已经装着的版本：没装过是空的，装着但看不出版本是「?」
+    in property <string> installed;
+    // 这个安装包比装着的新（1）、一样（0）、旧（-1）
+    in property <int> compare: 1;
+    in property <string> folder;
+    // 设置在哪（卸载时没删设置，告诉用户还留在哪）
+    in property <string> data-folder;
+    in-out property <bool> desktop: true;
+    in-out property <bool> remove-data;
+    in property <float> progress;
+    in property <string> step-text;
+    in property <string> error;
+    // 正在装、正在卸载：关不了
+    in property <bool> busy;
+    // 同主界面（win::hook_main_window）
+    in property <bool> repaint-all;
+    in property <bool> custom-frame;
+    in property <bool> window-active: true;
+    callback start-setup();
+    callback launch();
+    callback finish();
+    callback minimize-window();
+    callback close-window();
+
+    // 两个窗口按钮一共多宽：每格 34px，关闭按钮那格伸到窗口右边
+    property <length> window-buttons-width: 34px * 2 + 12px;
+    // 左边的步骤、正在装时的大标题：安装 / 更新 / 重新安装
+    property <string> verb: root.installed == "" ? "安装" : root.compare > 0 ? "更新" : root.compare == 0 ? "重新安装" : "安装";
+    property <string> installed-name: root.installed == "?" ? "电脑上的蒜鸟" : root.installed;
+
+    // Windows 问鼠标在窗口的哪里（同主窗口）：最上面 64px 里没有按钮的地方是标题栏
+    public pure function title-hit(x: length, y: length) -> int {
+        if (y >= 64px || (root.custom-frame && x >= root.width - root.window-buttons-width)) {
+            return 0;
+        }
+        return 1;
+    }
+
+    // 盖满窗口、看不见的一层，只为 repaint-all 一翻就让整个窗口重画（同主窗口）
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        background: root.repaint-all ? #ffffff00 : #00000000;
+    }
+
+    // 回车：选项页开始装，装好了打开蒜鸟（卸载要用鼠标点）；Esc：没在装的时候关掉
+    keys := FocusScope {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            if (event.text == Key.Return) {
+                if (root.page == 0 && root.mode == 0) {
+                    root.start-setup();
+                    return accept;
+                }
+                if (root.page == 2 && root.mode == 0) {
+                    root.launch();
+                    return accept;
+                }
+                if (root.page == 2 && root.mode == 2) {
+                    root.finish();
+                    return accept;
+                }
+            }
+            if (event.text == Key.Escape && !root.busy && root.page != 1) {
+                root.finish();
+                return accept;
+            }
+            return reject;
+        }
+        HorizontalLayout {
+            // 左边一栏：和主界面的侧边栏一样
+            Rectangle {
+                width: 210px;
+                background: Theme.side;
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    background: Theme.line;
+                }
+                VerticalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 18px;
+                    padding-bottom: 18px;
+                    HorizontalLayout {
+                        padding-left: 4px;
+                        padding-bottom: 26px;
+                        spacing: 5px;
+                        alignment: start;
+                        Image {
+                            source: @image-url("../../assets/logo.svg");
+                            width: 28px;
+                            height: 28px;
+                        }
+                        Text {
+                            text: "蒜鸟";
+                            font-size: 21px;
+                            font-weight: 900;
+                            color: Theme.fg;
+                        }
+                        VerticalLayout {
+                            alignment: end;
+                            padding-bottom: 7px;
+                            Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.lime-dot;
+                            }
+                        }
+                    }
+                    SetupSteps {
+                        current: root.page == 0 ? 0 : root.page == 2 ? 2 : 1;
+                        items: root.mode == 2 ? [
+                            { text: "确认", icon: @image-url("../icons/help.svg") },
+                            { text: "卸载", icon: @image-url("../icons/trash.svg") },
+                            { text: "完成", icon: @image-url("../icons/check.svg") },
+                        ] : root.mode == 1 ? [
+                            { text: "下载新版本", icon: @image-url("../icons/download.svg") },
+                            { text: "更新", icon: @image-url("../icons/refresh.svg") },
+                            { text: "完成", icon: @image-url("../icons/check.svg") },
+                        ] : [
+                            { text: "选项", icon: @image-url("../icons/sliders.svg") },
+                            { text: root.verb, icon: @image-url("../icons/download.svg") },
+                            { text: "完成", icon: @image-url("../icons/check.svg") },
+                        ];
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                    }
+                    Text {
+                        text: "  版本 " + root.version;
+                        color: Theme.mut;
+                        font-size: 12px;
+                    }
+                }
+            }
+            // 右边：一页一页换（淡入）
+            Rectangle {
+                horizontal-stretch: 1;
+                // 安装：要装到哪、桌面上要不要放一个
+                if root.page == 0 && root.mode != 2: Page {
+                    VerticalLayout {
+                        padding-left: 40px;
+                        padding-right: 40px;
+                        padding-top: 58px;
+                        padding-bottom: 26px;
+                        Muted {
+                            text: root.installed == "" ? "欢迎" : root.installed == "?" ? "电脑上已经装着蒜鸟" : "电脑上装着蒜鸟 " + root.installed;
+                            font-size: 13px;
+                        }
+                        Rectangle {
+                            height: 4px;
+                        }
+                        Text {
+                            text: root.installed == "" ? "安装蒜鸟" : root.compare > 0 ? "更新蒜鸟" : root.compare == 0 ? "重新安装蒜鸟" : "电脑上的蒜鸟更新";
+                            color: Theme.fg;
+                            font-size: 30px;
+                            font-weight: 700;
+                            letter-spacing: -0.4px;
+                        }
+                        Rectangle {
+                            height: 10px;
+                        }
+                        WrapText {
+                            text: root.installed == "" ? "把手机变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接，电脑端不需要驱动。"
+                                : root.compare > 0 ? root.installed-name + " 会换成 " + root.version + "。按键布局、设置都会留着，开着的蒜鸟会先关掉。"
+                                : root.compare == 0 ? "电脑上已经是这个版本（" + root.version + "），会把程序文件重新放一遍。按键布局、设置都会留着。"
+                                : root.installed-name + " 比这个安装包（" + root.version + "）新。继续安装会换成 " + root.version + "，按键布局、设置都会留着。";
+                            font-size: 13.5px;
+                        }
+                        Rectangle {
+                            height: 22px;
+                        }
+                        Card {
+                            VerticalLayout {
+                                SettingRow {
+                                    first: true;
+                                    label: "装在";
+                                    note: root.folder;
+                                }
+                                SettingRow {
+                                    label: "在桌面放一个「蒜鸟」";
+                                    note: "开始菜单里总会有一个。";
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Toggle {
+                                            checked <=> root.desktop;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Muted {
+                                    text: "只给当前用户安装，不用管理员权限。";
+                                }
+                            }
+                            GhostButton {
+                                text: "取消";
+                                clicked => {
+                                    root.finish();
+                                }
+                            }
+                            PrimaryButton {
+                                text: root.installed == "" ? "安装" : root.compare > 0 ? "更新" : root.compare == 0 ? "重新安装" : "仍然安装";
+                                has-icon: true;
+                                icon-after: true;
+                                icon: @image-url("../icons/right.svg");
+                                clicked => {
+                                    root.start-setup();
+                                }
+                            }
+                        }
+                    }
+                }
+                // 卸载：确认，要不要连设置一起删
+                if root.page == 0 && root.mode == 2: Page {
+                    VerticalLayout {
+                        padding-left: 40px;
+                        padding-right: 40px;
+                        padding-top: 58px;
+                        padding-bottom: 26px;
+                        Muted {
+                            text: root.installed == "" || root.installed == "?" ? "蒜鸟" : "蒜鸟 " + root.installed;
+                            font-size: 13px;
+                        }
+                        Rectangle {
+                            height: 4px;
+                        }
+                        Text {
+                            text: "卸载蒜鸟";
+                            color: Theme.fg;
+                            font-size: 30px;
+                            font-weight: 700;
+                            letter-spacing: -0.4px;
+                        }
+                        Rectangle {
+                            height: 10px;
+                        }
+                        WrapText {
+                            text: "会先关掉开着的蒜鸟（托盘里的后台也一起退出），再删掉程序，以及开始菜单和桌面上的「蒜鸟」。";
+                            font-size: 13.5px;
+                        }
+                        Rectangle {
+                            height: 22px;
+                        }
+                        Card {
+                            VerticalLayout {
+                                SettingRow {
+                                    first: true;
+                                    label: "装在";
+                                    note: root.folder;
+                                }
+                                SettingRow {
+                                    label: "同时删掉设置和日志";
+                                    note: "按键布局、配置备份、日志。不删的话，以后重新安装还能接着用。";
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Toggle {
+                                            checked <=> root.remove-data;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: end;
+                            GhostButton {
+                                text: "取消";
+                                clicked => {
+                                    root.finish();
+                                }
+                            }
+                            DangerButton {
+                                text: "卸载";
+                                clicked => {
+                                    root.start-setup();
+                                }
+                            }
+                        }
+                    }
+                }
+                // 正在装、正在卸载
+                if root.page == 1: Page {
+                    VerticalLayout {
+                        padding-left: 40px;
+                        padding-right: 40px;
+                        padding-top: 58px;
+                        padding-bottom: 58px;
+                        alignment: center;
+                        spacing: 16px;
+                        Text {
+                            text: root.mode == 2 ? "正在卸载蒜鸟" : root.mode == 1 || root.verb == "更新" ? "正在更新到 " + root.version : "正在" + root.verb + "蒜鸟 " + root.version;
+                            color: Theme.fg;
+                            font-size: 24px;
+                            font-weight: 700;
+                        }
+                        ProgressBar {
+                            value: root.progress;
+                        }
+                        Muted {
+                            text: root.step-text;
+                        }
+                    }
+                }
+                // 好了
+                if root.page == 2: Page {
+                    VerticalLayout {
+                        padding-left: 40px;
+                        padding-right: 40px;
+                        padding-top: 58px;
+                        padding-bottom: 26px;
+                        Rectangle {
+                            vertical-stretch: 1;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            ResultMark { }
+                        }
+                        Rectangle {
+                            height: 18px;
+                        }
+                        Text {
+                            text: root.mode == 2 ? "卸载好了" : root.mode == 1 || root.verb == "更新" ? "已经更新到 " + root.version : "装好了";
+                            color: Theme.fg;
+                            font-size: 30px;
+                            font-weight: 700;
+                            letter-spacing: -0.4px;
+                        }
+                        Rectangle {
+                            height: 10px;
+                        }
+                        WrapText {
+                            text: root.mode == 2 ? (root.remove-data ? "蒜鸟和它的设置都从这台电脑上删掉了。" : "设置还留在 " + root.data-folder + "，以后重新安装蒜鸟还能接着用。")
+                                : root.mode == 1 ? "蒜鸟马上就打开。"
+                                : "开始菜单里有「蒜鸟」" + (root.desktop ? "，桌面上也放了一个" : "") + "。第一次打开时有使用教程，带你把手机连上。";
+                            font-size: 13.5px;
+                        }
+                        Rectangle {
+                            vertical-stretch: 2;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: end;
+                            if root.mode == 0: GhostButton {
+                                text: "完成";
+                                clicked => {
+                                    root.finish();
+                                }
+                            }
+                            if root.mode == 0: PrimaryButton {
+                                text: "打开蒜鸟";
+                                has-icon: true;
+                                icon-after: true;
+                                icon: @image-url("../icons/right.svg");
+                                clicked => {
+                                    root.launch();
+                                }
+                            }
+                            if root.mode == 2: PrimaryButton {
+                                text: "完成";
+                                clicked => {
+                                    root.finish();
+                                }
+                            }
+                        }
+                    }
+                }
+                // 出错了：说清楚为什么，可以重试
+                if root.page == 3: Page {
+                    VerticalLayout {
+                        padding-left: 40px;
+                        padding-right: 40px;
+                        padding-top: 58px;
+                        padding-bottom: 26px;
+                        Rectangle {
+                            vertical-stretch: 1;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            ResultMark {
+                                warn: true;
+                            }
+                        }
+                        Rectangle {
+                            height: 18px;
+                        }
+                        Text {
+                            text: root.mode == 2 ? "没卸载完" : root.mode == 1 ? "没更新成" : "没装好";
+                            color: Theme.fg;
+                            font-size: 30px;
+                            font-weight: 700;
+                            letter-spacing: -0.4px;
+                        }
+                        Rectangle {
+                            height: 10px;
+                        }
+                        WrapText {
+                            text: root.error;
+                            font-size: 13.5px;
+                        }
+                        Rectangle {
+                            vertical-stretch: 2;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: end;
+                            GhostButton {
+                                text: "关闭";
+                                clicked => {
+                                    root.finish();
+                                }
+                            }
+                            PrimaryButton {
+                                text: "重试";
+                                has-icon: true;
+                                icon: @image-url("../icons/refresh.svg");
+                                clicked => {
+                                    root.start-setup();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 窗口按钮：最小化、关闭（正在装的时候关不了）
+    Rectangle {
+        visible: root.custom-frame;
+        x: root.width - root.window-buttons-width;
+        y: 0;
+        width: root.window-buttons-width;
+        height: 64px;
+        TitleButton {
+            x: 0;
+            height: parent.height;
+            icon: @image-url("../icons/win-min.svg");
+            active: root.window-active;
+            clicked => {
+                root.minimize-window();
+            }
+        }
+        TitleButton {
+            x: 34px;
+            height: parent.height;
+            extra-right: root.window-buttons-width - 34px * 2;
+            icon: @image-url("../icons/win-close.svg");
+            danger: true;
+            active: root.window-active;
+            enabled: !root.busy;
             clicked => {
                 root.close-window();
             }

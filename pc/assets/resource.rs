@@ -1,5 +1,12 @@
-// 两个 exe 的 build.rs 都 include! 这个文件：把 app.rc.in 填好（图标路径、文件说明、版本号），编进 exe
+// 三个 exe 的 build.rs 都 include! 这个文件：把 app.rc.in 填好（图标路径、文件说明、版本号），编进 exe
+#[allow(dead_code)]
 fn embed_app_resource(description: &str, exe: &str) {
+    let out = write_app_rc(description, exe, "");
+    let _ = embed_resource::compile(&out, embed_resource::NONE);
+}
+
+/// 填好 app.rc.in 写到 OUT_DIR，extra 接在最后（安装包用它加清单）。返回写好的文件
+fn write_app_rc(description: &str, exe: &str, extra: &str) -> std::path::PathBuf {
     let env = |name: &str| std::env::var(name).unwrap_or_default();
     let assets = std::path::Path::new(&env("CARGO_MANIFEST_DIR")).join("../assets");
     let version = env("CARGO_PKG_VERSION");
@@ -16,11 +23,12 @@ fn embed_app_resource(description: &str, exe: &str) {
     ] {
         rc = rc.replace(key, &value);
     }
+    rc.push_str(extra);
     let out = std::path::Path::new(&env("OUT_DIR")).join("app.rc");
     std::fs::write(&out, rc).expect("写不了 app.rc");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../assets/app.rc.in");
     println!("cargo:rerun-if-changed=../assets/resource.rs");
     println!("cargo:rerun-if-changed=../assets/icon.ico");
-    let _ = embed_resource::compile(&out, embed_resource::NONE);
+    out
 }

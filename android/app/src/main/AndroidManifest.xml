@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 只给「检查更新」用（Updater.kt）：看 GitHub 上有没有新版本、下载新版本的安装包，只连 GitHub。
+         语音识别照样在手机上做，不联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 检查更新：看是不是没联网、是不是在用流量（安装包一百五十多 MB，用流量时提醒一句） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 把下好的新版本交给系统安装，每次都由系统的安装界面问用户 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Android 11 起要声明才能找到系统的语音识别服务 -->
     <queries>
@@ -38,5 +45,19 @@
             android:name=".LinkService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- 电脑上复制的图片放进手机剪贴板：粘贴的 App 通过它读图片（只读，不导出，粘贴时系统临时授权；见 ClipProvider.kt） -->
+        <provider
+            android:name=".ClipProvider"
+            android:authorities="${applicationId}.clip"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- 把下好的新版本安装包交给系统安装器读（只读，只认 App 缓存里核对过的安装包；见 Updater.kt 的 ApkProvider） -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="${applicationId}.update"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

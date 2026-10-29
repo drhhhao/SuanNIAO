@@ -19,7 +19,7 @@ use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::Graphics::Gdi::{DeleteEnhMetaFile, GetEnhMetaFileBits, SetEnhMetaFileBits, HENHMETAFILE};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW,
-    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::{
@@ -654,3 +654,86 @@ mod tests {
         println!("done at seq {}", sequence());
     }
 }
+
+/// 剪贴板里能同步给手机的内容（clipsync 用）
+pub enum Shared {
+    Text(String),
+    /// 现成的 PNG（截图工具、浏览器复制图片时会放）
+    Png(Vec<u8>),
+    /// 设备无关位图（CF_DIB / CF_DIBV5：BITMAPINFOHEADER 开头，没有文件头）
+    Dib(Vec<u8>),
+}
+
+fn png_format() -> u32 {
+    static FORMAT: OnceLock<u32> = OnceLock::new();
+    *FORMAT.get_or_init(|| unsafe { RegisterClipboardFormatW(w!("PNG")) })
+}
+
+/// 剪贴板里能同步给手机的内容：有文字给文字，没有文字再看图片。带「监视程序别管」标记的、
+/// 标了「别进剪贴板历史」或「别上传云剪贴板」的（密码管理器复制的密码，我们自己借剪贴板时写的字）不给
+pub fn shareable() -> Option<Shared> {
+    let _open = Opened::new()?;
+    let [exclude, history, cloud] = *markers();
+    unsafe {
+        if IsClipboardFormatAvailable(exclude).is_ok() {
+            return None;
+        }
+        for format in [history, cloud] {
+            if let Some(bytes) = global_bytes(format) {
+                if bytes.len() >= 4 && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == 0 {
+                    return None;
+                }
+            }
+        }
+        if let Some(bytes) = global_bytes(cf(CF_UNICODETEXT)) {
+            let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+            return Some(Shared::Text(String::from_utf16_lossy(&wide[..end])));
+        }
+        if IsClipboardFormatAvailable(png_format()).is_ok() {
+            if let Some(bytes) = global_bytes(png_format()) {
+                return Some(Shared::Png(bytes));
+            }
+        }
+        for format in [CF_DIB, CF_DIBV5] {
+            if IsClipboardFormatAvailable(cf(format)).is_ok() {
+                if let Some(bytes) = global_bytes(cf(format)) {
+                    return Some(Shared::Dib(bytes));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// 剪贴板里有没有图片（不用打开剪贴板）
+pub fn has_image() -> bool {
+    [png_format(), cf(CF_DIB), cf(CF_DIBV5), cf(CF_BITMAP)]
+        .into_iter()
+        .any(|format| unsafe { IsClipboardFormatAvailable(format) }.is_ok())
+}
+
+/// 剪贴板里能同步的文字（没有文字、或者不能同步时 None）
+pub fn shareable_text() -> Option<String> {
+    match shareable()? {
+        Shared::Text(text) => Some(text),
+        _ => None,
+    }
+}
+
+/// 手机同步过来的文字放进剪贴板。不带标记：和自己复制的一样，也进剪贴板历史（Win+V）。
+/// 成功返回写完以后的剪贴板序号（clipsync 认出这次变化是自己写的，不再发回手机）
+pub fn set_text(text: &str) -> Option<u32> {
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let bytes = unsafe { std::slice::from_raw_parts(wide.as_ptr().cast::<u8>(), wide.len() * 2) };
+    let open = Opened::new()?;
+    unsafe {
+        EmptyClipboard().ok()?;
+        if !put_bytes(cf(CF_UNICODETEXT), bytes) {
+            return None;
+        }
+    }
+    drop(open);
+    Some(sequence())
+}
+

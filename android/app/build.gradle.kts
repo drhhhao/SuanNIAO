@@ -13,8 +13,8 @@ android {
         applicationId = "dev.suanniao"
         minSdk = 28
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.9.5"
+        versionCode = 23
+        versionName = "0.9.8"
         // 只给 64 位 ARM 手机用，本地语音识别的原生库只打这一种，安装包小很多
         ndk { abiFilters += "arm64-v8a" }
     }

@@ -4,9 +4,11 @@
 //!              move/scroll/mouse（触控板；move 带 ts＝手指移动的时间，电脑按它匀速回放，mouse 和 move 按先后顺序发）、
 //!              button（按键 id + 按法；连发、重复长按时带 seq、ts、held）、hold（直通的按键按下 / 松开）、text（语音文字）、
 //!              state（亮屏/息屏）、layout（手机上调好的布局）、battery（电量 level 0～100、charging，连上时和变化时发）、
-//!              configAck（套用完第 rev 次推送的配置）、setEnabled（手机上暂停 / 恢复按键）
+//!              configAck（套用完第 rev 次推送的配置）、setEnabled（手机上暂停 / 恢复按键）、
+//!              clip（手机剪贴板里的文字 s，回到蒜鸟时剪贴板变了才发，见 clipsync）
 //! 电脑 → 手机：hello、pong、config（布局和参数，连上时和配置变化时发，带每次加一的 rev）、layoutSaved（布局存好没有）、
-//!              profile（切换了方案：from、to）
+//!              profile（切换了方案：from、to）、clip（电脑上复制的文字 s）、
+//!              clipImg / clipImgPart / clipImgEnd / clipImgCancel（电脑上复制的图片，分块发，见 clipsync）
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -213,7 +215,7 @@ impl Session {
         };
         let num = |k: &str| msg.get(k).and_then(Value::as_f64).unwrap_or(0.0);
         let text = |k: &str| msg.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-        if crate::trace::dry_run() && matches!(text("t").as_str(), "button" | "hold" | "key" | "text" | "layout") {
+        if crate::trace::dry_run() && matches!(text("t").as_str(), "button" | "hold" | "key" | "text" | "layout" | "clip") {
             crate::trace::event("skip", &[]);
             return;
         }
@@ -330,6 +332,7 @@ impl Session {
                 log!("{}", if on { "🔆 手机亮屏" } else { "🌙 手机息屏（连接保持）" });
             }
             "release" => input::release_all(),
+            "clip" => crate::clipsync::from_phone(&text("s")),
             "smooth" => {} // 旧版 App 的开关，现在以电脑端设置为准
             "mem" => {
                 let (working_set, private) = crate::util::memory_bytes();

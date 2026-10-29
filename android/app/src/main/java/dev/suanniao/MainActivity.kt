@@ -58,7 +58,7 @@ import kotlin.math.sin
  * - 触控板、调整布局时排除系统返回手势；返回键只把 App 退到后台，不关掉
  * 菜单、对话框、提示都是自绘的（Overlays），不用系统样式。
  */
-class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.Host {
+class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.Host, Updater.Host {
 
     private var link: LinkService? = null
     private val connection = object : ServiceConnection {
@@ -86,6 +86,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private lateinit var content: LinearLayout
     private lateinit var overlays: Overlays
     private lateinit var setup: Setup
+    /** 检查更新（Updater.kt） */
+    private lateinit var updater: Updater
 
     /** 顶栏右边那行：平时是连接状态，按了键、有提示时临时换上去 */
     private lateinit var readout: Ui.Readout
@@ -187,6 +189,10 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private var dimAfterMs = DIM_AFTER_MS
     private val dimTask = Runnable { setDimmed(true) }
 
+    /** 最近一次碰屏幕的时间、现在有没有手指按着：自己弹更新面板前看一眼，别挡住正在用的手 */
+    private var lastTouchAt = 0L
+    private var touching = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -207,6 +213,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         if (!setup.onboardingOpen) startLinkIfReady()
         applyVoiceSettings() // 回到前台：模型如果在后台被释放了，重新加载
         scheduleDim()
+        updater.onForeground() // 开着自动检查、离上次够久了：过几秒看一眼有没有新版本
     }
 
     override fun onResume() {
@@ -215,15 +222,35 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         if (setup.onboardingOpen) setup.refreshOnboarding() // 可能刚从蓝牙设置、权限设置回来
         updateBanner()
         main.postDelayed({ maybeOfferPending(force = false) }, 400)
+        updater.onResume() // 可能刚从「安装未知应用」设置、系统安装界面回来
+        getSystemService(ClipboardManager::class.java)?.addPrimaryClipChangedListener(clipListener) // 在蒜鸟里复制的也同步
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) offerClipboard()
+    }
+
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { offerClipboard() }
+
+    /** 剪贴板同步：蒜鸟拿着焦点时才读得到剪贴板，手机上新复制的文字发给电脑（见 ClipSync） */
+    private fun offerClipboard() {
+        val l = link ?: return
+        if (!hasWindowFocus() || !l.connected || !ClipSync.enabled(l.lastConfig)) return
+        val n = ClipSync.offer(this, prefs) { l.send(it) }
+        if (n > 0) flash("手机剪贴板已同步到电脑（$n 字）", 2000)
     }
 
     override fun onPause() {
         resumed = false
+        getSystemService(ClipboardManager::class.java)?.removePrimaryClipChangedListener(clipListener)
+        updater.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
         reusable.values.forEach { (it as? VoiceButton)?.release() }
+        updater.detach()
         super.onDestroy()
     }
 
@@ -240,6 +267,11 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
      * - debugTutorial：从第 N 页打开使用教程（从 0 数，不算第一次打开）
      * - debugDimMs：闲置多久调暗屏幕（毫秒）
      * - debugConfigFile：临时套用手机上的一份配置（测语音输入框这类真实配置里没有的模块）
+     * - debugUpdateUrl：检查更新改用这个地址的 latest.json（空字符串 = 换回 GitHub），马上查一次。
+     *   加 debugUpdateAuto=true 当成打开 App 时的自动检查（管「跳过」「以后再说」、等别的面板关掉、手离开屏幕）；
+     *   加 debugUpdateInstall=true 让调试版也下载、安装（测整条路，装的得是同一台电脑打的、versionCode 更大的调试版）。
+     *   电脑上起个 http 服务再 adb reverse tcp:8765 tcp:8765，调试版放行 127.0.0.1 的 http：
+     *   adb shell am start -n dev.suanniao/.MainActivity -f 0x20000000 --es debugUpdateUrl http://127.0.0.1:8765/latest.json
      */
     private fun handleDebugIntent(intent: Intent?) {
         if (!BuildConfig.DEBUG || intent == null) return
@@ -263,6 +295,11 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 applyConfig(force = true)
             }
         }
+        intent.getStringExtra("debugUpdateUrl")?.let { url ->
+            val auto = intent.getBooleanExtra("debugUpdateAuto", false)
+            val install = intent.getBooleanExtra("debugUpdateInstall", false)
+            main.post { updater.debugOverride(url.ifEmpty { null }, auto, install) }
+        }
     }
 
     override fun onStop() {
@@ -276,6 +313,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         // link 留着不清：服务是前台服务还在跑，松手后还在收尾的那一段字照样能发出去（发不出去会存到手机上）
         main.removeCallbacks(dimTask)
         setDimmed(false)
+        updater.onBackground()
         super.onStop()
     }
 
@@ -425,6 +463,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         root.addView(overlayHost, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         overlays = Overlays(overlayHost)
         setup = Setup(this, overlays)
+        updater = Updater(this, overlays)
         // 自己处理系统栏和键盘占的位置：键盘弹出时网格整体变矮，模块都还在键盘上方
         if (Build.VERSION.SDK_INT >= 30) {
             @Suppress("DEPRECATION") // Android 15 起默认就是这样；11～14 还需要显式设置
@@ -1197,6 +1236,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             s.dismiss()
             showGestureGuide()
         }
+        // 点了马上查一次：有新版本就关掉菜单弹更新面板，没有就只改这行的小字
+        row("检查更新", updater.menuLine(), trailing = null) { updater.menuTapped() }
+        toggle("自动检查更新", "打开 App 时看看有没有新版本，只连 GitHub", updater.autoCheck) { on -> updater.autoCheck = on }
         row("关于", aboutLine(), trailing = null) {
             aboutOpen = !aboutOpen
             s.refresh()
@@ -1307,6 +1349,27 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 (0 until grid.childCount).any { grid.getChildAt(it) is TouchpadView }
             ) showGestureGuide()
         }, 900)
+    }
+
+    // ───────── 检查更新（Updater.kt 的 Host） ─────────
+
+    override fun canShowUpdate(manual: Boolean): Boolean {
+        if (!resumed || editor != null || overlays.isOpen || setup.onboardingOpen || anyVoiceBusy()) return false
+        if (manual) return true
+        // 第一次打开、引导教程还没走：先不弹
+        if (savedAddress() == null && !setup.tutorialSeen) return false
+        // 手在屏幕上、刚碰过：等手离开一会儿，别挡住正在用的触控板、按键
+        return !touching && SystemClock.uptimeMillis() - lastTouchAt >= UPDATE_QUIET_MS
+    }
+
+    override fun closeMenuForUpdate() {
+        menuSheet?.dismiss()
+    }
+
+    override fun updateNotice(text: String) = say(text)
+
+    override fun onUpdateChanged() {
+        menuSheet?.refresh()
     }
 
     // ───────── 在手机上暂停 / 恢复按键 ─────────
@@ -1697,6 +1760,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     // ───────── 屏幕调暗 ─────────
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        lastTouchAt = SystemClock.uptimeMillis()
+        touching = ev.actionMasked != MotionEvent.ACTION_UP && ev.actionMasked != MotionEvent.ACTION_CANCEL
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             if (dimmed) {
                 // 调暗时的第一下只用来恢复亮度，不算按键
@@ -1770,10 +1835,21 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 showBase(animate = false)
                 menuSheet?.refresh()
             }
-            "config" -> onConfig(msg)
+            "config" -> {
+                onConfig(msg)
+                offerClipboard() // 刚连上（配置里才知道开没开同步）：在前台的话把手机上新复制的发过去
+            }
             "layoutSaved" -> onLayoutSaved(msg)
             // 按键里的「切换方案」切了方案：屏幕中间浮出新方案名
             "profile" -> spotlightProfile(profileTitle(msg.optString("to")))
+            // 电脑上复制了图片：蓝牙上要传一会儿，传完才能粘贴
+            "clipImg" -> if (ClipSync.enabled(link?.lastConfig)) {
+                flash("正在接收电脑上复制的图片（${(msg.optLong("size") + 1023) / 1024} KB）…", 15_000)
+            }
+            "clipImgCancel" -> if (ClipSync.enabled(link?.lastConfig)) flash("电脑上的剪贴板又变了，图片不传了", 2000)
+            "clipImgEnd" -> if (msg.has("ok")) {
+                flash(if (msg.optBoolean("ok")) "电脑上复制的图片已放进手机剪贴板" else "图片没收全，没放进剪贴板", 2500)
+            }
             "mem" -> {
                 memText = "工作集 %.1f MB · 私有 %.1f MB".format(msg.optDouble("ws") / 1_048_576, msg.optDouble("private") / 1_048_576)
                 menuSheet?.refresh()
@@ -1964,6 +2040,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         /** 闲置这么久把屏幕调暗 */
         private const val DIM_AFTER_MS = 2 * 60_000L
         private const val DIM_BRIGHTNESS = 0.02f
+        /** 手离开屏幕这么久以后，才自己弹更新面板 */
+        private const val UPDATE_QUIET_MS = 2500L
         /** 这个版本起电脑端认识手机上暂停（setEnabled）和配置回执（configAck） */
         private const val MIN_PC_VERSION = "0.6.0"
 

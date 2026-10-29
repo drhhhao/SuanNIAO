@@ -8,6 +8,8 @@
 
 mod actions;
 mod clipboard;
+mod clipimage;
+mod clipsync;
 mod input;
 mod launcher;
 mod link;
@@ -16,6 +18,7 @@ mod playout;
 mod state;
 mod trace;
 mod tray;
+mod update;
 mod util;
 
 use std::time::{Duration, SystemTime};
@@ -77,6 +80,8 @@ fn main() {
     });
     state::update_status(|_| {});
     std::thread::spawn(watch_config);
+    std::thread::spawn(update::run);
+    std::thread::spawn(clipsync::run);
     // 状态文件：连发时攒着的改动每 200 毫秒写一次；平时每 5 秒刷新一次时间戳，主界面靠它判断后台还活着
     std::thread::spawn(|| {
         for tick in 1u64.. {

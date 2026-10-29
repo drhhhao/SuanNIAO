@@ -1,0 +1,30 @@
+[package]
+name = "suanniao-setup"
+version = "0.1.0"
+edition = "2021"
+description = "蒜鸟电脑端安装包：启动程序 SuanNIAO-Setup 和打包工具 suanniao-pack"
+build = "build.rs"
+
+[lib]
+name = "suanniao_setup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "SuanNIAO-Setup"
+path = "src/main.rs"
+
+[[bin]]
+name = "suanniao-pack"
+path = "src/pack.rs"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_Compression",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+embed-resource = "3"

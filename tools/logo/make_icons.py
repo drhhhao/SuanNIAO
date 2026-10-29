@@ -18,9 +18,6 @@ MARK_VIEW = "8 8 240 240"     # 不带底板时按鸟的外框裁
 # 鸟要落在中间 66dp 的安全区里，所以 256 的方块缩成 69dp 左右：整块画布对应 400 个单位
 ADAPTIVE_VIEW = "-72 -72 400 400"
 STAT_VIEW = "-1 -1 258 258"   # 通知栏小图标：鸟占满 24dp 里的 22dp 左右
-# 电脑端安装程序「安装完成」页左边的竖图（Inno Setup 的 WizardImageFile，164×314，出两倍大）：
-# 整条铺底板那样的蓝色渐变，鸟在偏上的地方，宽度占八成
-SIDE_VIEW = (-32, -129, 320, 613)
 
 
 def render(svg_text, px, py=None):
@@ -29,18 +26,6 @@ def render(svg_text, px, py=None):
         sp.write_text(svg_text, encoding="utf-8")
         subprocess.run([str(RENDER), str(sp), str(out), str(px)] + ([str(py)] if py else []), check=True)
         return out.read_bytes()
-
-
-def installer_side():
-    x, y, w, h = SIDE_VIEW
-    a = L.Art()
-    a.lg("sideBg", (0, y), (0, y + h), [(0, L.PLATE_TOP, 1), (1, L.PLATE_BOTTOM, 1)])
-    (cx, cy), r, op = L.GLOW
-    a.rg("sideGlow", (cx, cy), r * 1.3, [(0, "#FFFFFF", op), (1, "#FFFFFF", 0)])
-    a.add(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{a.url("sideBg")}"/>')
-    a.add(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{a.url("sideGlow")}"/>')
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="{x} {y} {w} {h}">'
-            f"{a.out()}{L.art(False, True)}</svg>")
 
 
 def write(path, data):
@@ -105,7 +90,6 @@ def main():
     write(PC / "icon.ico", ico([(px, render(icon, px)) for px in (16, 20, 24, 32, 40, 48, 64, 256)]))
     write(PC / "icon.png", render(icon, 256))
     write(PC / "logo.svg", mark)
-    write(PC / "installer-side.png", render(installer_side(), 328, 628))
 
     # 手机端：自适应图标三层（底板、前景、主题图标用的单色剪影），老式图标，通知栏小图标
     write(RES / "drawable" / "ic_launcher_bg.xml", adaptive_background())

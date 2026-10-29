@@ -1,5 +1,7 @@
 # 发版：推送到 main 以后，如果「电脑端版本 + 手机端版本」这一对还没发布过，就在 GitHub 的机器上
 # 编译两端、打包，发一个 Release；版本号没变就什么都不做。所以发新版 = 改版本号 + 推送。
+# Release 里还有一个 latest.json（两端的版本号、下载地址、大小、SHA-256、更新说明）：
+# 两端的蒜鸟读 releases/latest/download/latest.json 看有没有新版本（pc/update、android Updater.kt）。
 # 也可以在仓库网页的 Actions → 发版 → Run workflow 手动跑一遍（同样只在版本号是新的时候发）。
 name: 发版
 
@@ -39,6 +41,10 @@ jobs:
           if [ "$pc" != "$core" ]; then echo "::error::pc/ui 是 $pc、pc/core 是 $core，两个要一起改"; exit 1; fi
           tag="pc$pc-android$phone"
           if gh release view "$tag" >/dev/null 2>&1; then new=false; else new=true; fi
+          # 每个新版本都要在 CHANGELOG.md 里写这一版改了什么，没写就不发
+          if [ "$new" = true ] && ! grep -qxF "## 电脑端 $pc · 手机端 $phone" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 里没有「## 电脑端 $pc · 手机端 $phone」这一段，先写好这一版改了什么再发"; exit 1
+          fi
           echo "电脑端 $pc，手机端 $phone，发布名 $tag，要发新版：$new"
           { echo "pc=$pc"; echo "phone=$phone"; echo "tag=$tag"; echo "new=$new"; } >> "$GITHUB_OUTPUT"
 
@@ -61,21 +67,14 @@ jobs:
       - name: 编译
         working-directory: pc
         run: cargo build --release --locked
-      # 安装包用 Inno Setup 做：固定用这个版本，下载后先核对指纹
-      - name: 装 Inno Setup
-        run: |
-          $exe = "$env:RUNNER_TEMP\innosetup-6.7.4.exe"
-          Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe -OutFile $exe
-          if ((Get-FileHash -Algorithm SHA256 $exe).Hash -ne 'A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C') { throw '下载的 Inno Setup 和记下的指纹对不上' }
-          $dir = "$env:RUNNER_TEMP\inno"
-          $p = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/PORTABLE=1','/CURRENTUSER',"/DIR=`"$dir`"" -PassThru -Wait
-          if ($p.ExitCode -ne 0 -or -not (Test-Path "$dir\ISCC.exe")) { throw "Inno Setup 没装上（$($p.ExitCode)）" }
-          "ISCC=$dir\ISCC.exe" >> $env:GITHUB_ENV
+      # 安装包：启动程序 SuanNIAO-Setup.exe 后面接上压缩好的两个 exe（pc/setup）。
+      # 双击后运行里面的 `SuanNIAO.exe --setup`，安装界面和蒜鸟一个样子（pc/ui/src/setup.rs）
       - name: 做安装包
+        working-directory: pc
         env:
           VER: ${{ needs.check.outputs.pc }}
         run: |
-          & $env:ISCC "/DAppVersion=$env:VER" pc/installer/SuanNIAO.iss
+          target/release/suanniao-pack.exe target/release/SuanNIAO-Setup.exe "target/installer/SuanNIAO-PC-$env:VER-Setup.exe" target/release/SuanNIAO.exe target/release/SuanNIAO-core.exe
           if ($LASTEXITCODE -ne 0) { throw '安装包没做出来' }
       - uses: actions/upload-artifact@v7
         with:
@@ -140,8 +139,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # 要拿到上一个发布以来的提交记录
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -155,15 +152,62 @@ jobs:
           TAG: ${{ needs.check.outputs.tag }}
         run: |
           prev=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+          # CHANGELOG.md 里从这一版往下、到上一次发布的那一版为止的几段：中间没发布过的版本（比如本机部署过的）一起算进来。
+          # 每段的标题改成「#### 电脑端 X · 手机端 Y」；只有一段时不要标题
+          stop=""
+          if [ -n "$prev" ]; then v=${prev#pc}; stop="## 电脑端 ${v%%-android*} · 手机端 ${v#*-android}"; fi
+          awk -v h="## 电脑端 $PC · 手机端 $PHONE" -v stop="$stop" '
+            $0 == h { on = 1; print "#### " substr($0, 4); next }
+            on && /^## / { if (stop == "" || $0 == stop) exit; print "#### " substr($0, 4); next }
+            on' CHANGELOG.md > changes.md
+          if [ "$(grep -c '^#### ' changes.md)" = 1 ]; then sed -i '1d' changes.md; fi
+          if ! grep -q '[^[:space:]]' changes.md; then echo "::error::CHANGELOG.md 里这一版的更新说明是空的"; exit 1; fi
+          # 两端检查更新读的 latest.json。更新说明取这几段里顶格的「- 」：写在「电脑端…」「手机端…」下面的只算那一端，
+          # 「两端一起…」下面的和没写哪一端的两端都算（每段重新算）
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, re
+          pc, phone, tag, repo = (os.environ[k] for k in ("PC", "PHONE", "TAG", "GH_REPO"))
+          gradle = open("android/app/build.gradle.kts", encoding="utf-8").read()
+          code = int(re.search(r"versionCode\s*=\s*(\d+)", gradle).group(1))
+          notes = {"all": [], "pc": [], "android": []}
+          sides = ("pc", "android")
+          for line in open("changes.md", encoding="utf-8"):
+              line = line.rstrip()
+              if line.startswith("#"):
+                  sides = ("pc", "android")
+              elif line.startswith("电脑端"):
+                  sides = ("pc",)
+              elif line.startswith("手机端"):
+                  sides = ("android",)
+              elif line.startswith("两端"):
+                  sides = ("pc", "android")
+              elif line.startswith("- "):
+                  text = line[2:].replace("`", "").strip()
+                  notes["all"].append(text)
+                  for side in sides:
+                      notes[side].append(text)
+          def asset(name, version, **extra):
+              data = open(f"dist/{name}", "rb").read()
+              url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+              return dict(version=version, file=name, url=url, size=len(data), sha256=hashlib.sha256(data).hexdigest(), **extra)
+          manifest = dict(
+              schema=1, tag=tag, title=f"蒜鸟 电脑端 {pc} · 手机端 {phone}",
+              published=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              page=f"https://github.com/{repo}/releases/tag/{tag}", notes=notes["all"],
+              pc=asset(f"SuanNIAO-PC-{pc}-Setup.exe", pc, notes=notes["pc"]),
+              android=asset(f"SuanNIAO-Android-{phone}.apk", phone, code=code, notes=notes["android"]),
+          )
+          with open("dist/latest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, ensure_ascii=False, indent=2)
+          PY
+          cat dist/latest.json
           {
             echo "**电脑**（Windows 10 / 11）：下载 \`SuanNIAO-PC-$PC-Setup.exe\`，双击安装，不用管理员权限，装好后开始菜单里有「蒜鸟」。"
-            echo "Windows 提示「Windows 已保护你的电脑」时，点「更多信息」→「仍要运行」。以后更新也是下载新的安装包直接装，设置都会留着。"
+            echo "Windows 提示「Windows 已保护你的电脑」时，点「更多信息」→「仍要运行」。装好以后有新版本时蒜鸟会自己提示，点「立即更新」就行，设置都会留着。"
             echo
-            echo "**手机**：下载 \`SuanNIAO-Android-$PHONE.apk\` 安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用，不用另外下载、不用联网。"
-            if [ -n "$prev" ]; then
-              echo
-              echo "### 和 $prev 比改了什么"
-              git log --no-merges --format='- %s' "$prev..HEAD"
-            fi
+            echo "**手机**：下载 \`SuanNIAO-Android-$PHONE.apk\` 安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用。以后有新版本时手机上的蒜鸟也会提示。"
+            echo
+            if [ -n "$prev" ]; then echo "### 和上一版（$prev）比改了什么"; else echo "### 这一版有什么"; fi
+            cat changes.md
           } > notes.md
           gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "蒜鸟 电脑端 $PC · 手机端 $PHONE" --notes-file notes.md

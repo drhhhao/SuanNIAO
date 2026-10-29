@@ -1,4 +1,4 @@
-//! 主界面用到的 Windows 小功能：只开一个窗口（新版换掉开着的旧版）、顶栏当标题栏、系统要重画时整个窗口重画、启动和换掉后台、选文件、开机自启、打开文件夹、蓝牙自检。
+//! 主界面用到的 Windows 小功能：只开一个窗口（新版换掉开着的旧版）、顶栏当标题栏（安装界面也用）、系统要重画时整个窗口重画、启动和换掉后台、选文件、开机自启、打开文件夹、蓝牙自检。
 //!
 //! 文件对话框放在单独的线程里开（file_dialog）：在界面的回调里直接开的话，对话框自己的消息循环和界面的事件循环、
 //! 定时器互相唤醒，对话框开着时会占满一个 CPU 核。
@@ -10,6 +10,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -23,7 +24,9 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, GlobalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND, LPARAM,
     LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, GetUpdateRect, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, GetUpdateRect, InvalidateRect, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT};
@@ -46,13 +49,16 @@ use windows::Win32::UI::Shell::{
     ABM_GETAUTOHIDEBAREX, ABM_GETSTATE, ABS_AUTOHIDE, APPBARDATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, EnumWindows, FindWindowExW, FindWindowW, GetClientRect, GetPropW, GetWindowLongW, GetWindowThreadProcessId, IsIconic,
-    IsZoomed, PostMessageW, RemovePropW, SetForegroundWindow, SetPropW, SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx,
+    CallNextHookEx, EnumWindows, FindWindowExW, FindWindowW, GetClientRect, GetPropW, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    IsIconic,
+    IsZoomed, PostMessageW, RegisterWindowMessageW, RemovePropW, SetForegroundWindow, SetPropW, SetWindowPos, SetWindowsHookExW, ShowWindow,
+    UnhookWindowsHookEx,
     CBT_CREATEWNDW, CREATESTRUCTW, GWL_EXSTYLE, GWL_STYLE, HCBT_CREATEWND, HHOOK, HTCAPTION, HTCLIENT, HTMAXBUTTON, HTTOP, HTTOPLEFT,
     HTTOPRIGHT, MINMAXINFO, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXPADDEDBORDER, SM_CYSIZEFRAME,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, SW_SHOWNORMAL, WH_CBT,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_GETMINMAXINFO, WM_MOUSEMOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCDESTROY,
     WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE, WM_SYSCOMMAND,
+    WS_THICKFRAME,
 };
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -80,9 +86,9 @@ fn core_exe() -> PathBuf {
     exe_dir().join("SuanNIAO-core.exe")
 }
 
-/// 已经开着一个主界面时，把它提到前台并返回 true（这个进程直接退出）。
+/// 已经开着一个主界面时，把它提到前台并返回 true（这个进程直接退出）；show_update 时还让它打开更新窗口（`--show-update`）。
 /// 开着的比这个版本旧（刚更新完，旧窗口还开着）就让它关掉，这个接着启动，返回 false
-pub fn activate_existing_window() -> bool {
+pub fn activate_existing_window(show_update: bool) -> bool {
     unsafe {
         // 句柄故意不关：进程活着时一直占着这个名字（换掉旧窗口以后也是）
         let _ = CreateMutexW(None, true, UI_LOCK);
@@ -90,7 +96,7 @@ pub fn activate_existing_window() -> bool {
             close_legacy_ui();
             return false;
         }
-        let running = running_ui(UI_LOCK);
+        let running = running_ui(UI_LOCK, None);
         if let Some((hwnd, version)) = running {
             if version < version_mark() && close_and_wait(hwnd) {
                 return false;
@@ -101,9 +107,18 @@ pub fn activate_existing_window() -> bool {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
             let _ = SetForegroundWindow(hwnd);
+            if show_update {
+                let _ = PostMessageW(Some(hwnd), show_update_message(), WPARAM(0), LPARAM(0));
+            }
         }
         true
     }
+}
+
+/// 让开着的主界面打开更新窗口（另一个 `SuanNIAO.exe --show-update` 发过来）
+fn show_update_message() -> u32 {
+    static MESSAGE: OnceLock<u32> = OnceLock::new();
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("SuanNIAO.ShowUpdate")) })
 }
 
 /// 挂在主窗口上的版本号：0.7.4 → 7004，比大小就是比版本
@@ -115,46 +130,52 @@ fn version_mark() -> usize {
 /// 改名前的主界面（PhonePad.exe）还开着：一定比这个版本旧，让它关掉
 fn close_legacy_ui() {
     if mutex_exists(LEGACY_UI_LOCK) {
-        if let Some((hwnd, _)) = running_ui(LEGACY_UI_LOCK) {
+        if let Some((hwnd, _)) = running_ui(LEGACY_UI_LOCK, None) {
             close_and_wait(hwnd);
         }
     }
 }
 
-/// 开着的主界面窗口和它挂的版本号（属性名是 lock）。
-/// 0.7.3 以前的没挂版本号（当作 0）：认标题「蒜鸟」和 winit 的窗口类，还要是这个文件夹里的程序开的（不碰别处的副本）
-fn running_ui(lock: PCWSTR) -> Option<(HWND, usize)> {
-    struct Search {
+/// 开着的主界面窗口和它挂的版本号（属性名是 lock）。dir 不是 None 时只要那个文件夹里的程序开的。
+/// 0.7.3 以前的没挂版本号（当作 0）：认标题「蒜鸟」和 winit 的窗口类，还要是 dir（没给就是这个程序所在的文件夹）里的程序开的（不碰别处的副本）
+fn running_ui(lock: PCWSTR, dir: Option<&Path>) -> Option<(HWND, usize)> {
+    struct Search<'a> {
         lock: PCWSTR,
+        dir: Option<&'a Path>,
         found: Option<(HWND, usize)>,
     }
     unsafe extern "system" fn marked(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
         unsafe {
-            let search = &mut *(lparam.0 as *mut Search);
+            let search = &mut *(lparam.0 as *mut Search<'_>);
             let version = GetPropW(hwnd, search.lock).0 as usize;
-            if version == 0 {
+            if version == 0 || search.dir.is_some_and(|dir| !window_in(hwnd, dir)) {
                 return true.into();
             }
             search.found = Some((hwnd, version));
             false.into()
         }
     }
-    let mut search = Search { lock, found: None };
+    let mut search = Search { lock, dir, found: None };
     unsafe {
-        let _ = EnumWindows(Some(marked), LPARAM(&mut search as *mut Search as isize));
+        let _ = EnumWindows(Some(marked), LPARAM(&mut search as *mut Search<'_> as isize));
     }
     if search.found.is_some() {
         return search.found;
     }
-    let here = exe_dir();
+    let here = dir.map(Path::to_path_buf).unwrap_or_else(exe_dir);
     let mut after = None;
     while let Ok(hwnd) = unsafe { FindWindowExW(None, after, w!("Window Class"), w!("蒜鸟")) } {
-        if window_exe_dir(hwnd).is_some_and(|dir| same_dir(&dir, &here)) {
+        if window_in(hwnd, &here) {
             return Some((hwnd, 0));
         }
         after = Some(hwnd);
     }
     None
+}
+
+/// 窗口是不是 dir 里的程序开的
+fn window_in(hwnd: HWND, dir: &Path) -> bool {
+    window_exe_dir(hwnd).is_some_and(|exe_dir| same_dir(&exe_dir, dir))
 }
 
 /// 窗口是哪个文件夹里的程序开的
@@ -173,7 +194,7 @@ fn window_exe_dir(hwnd: HWND) -> Option<PathBuf> {
 }
 
 /// 大小写、短文件名不一样也算同一个文件夹
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub fn same_dir(a: &Path, b: &Path) -> bool {
     matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
@@ -202,8 +223,12 @@ pub struct Frame {
     pub max_pressed: bool,
 }
 
-/// 主窗口要接管的事（见 hook_main_window）
+/// 主窗口要接管的事（见 hook_main_window）。安装界面也这样接管，只是 main 是 false
 pub struct MainWindow {
+    /// 是蒜鸟的主界面：挂上版本号（以后的新版认得出它），别的 `SuanNIAO.exe --show-update` 能叫它打开更新窗口
+    pub main: bool,
+    /// 别的 `SuanNIAO.exe --show-update` 叫这个窗口打开更新窗口（排到事件循环里调）
+    pub show_update: Box<dyn Fn()>,
     /// 系统要重画一块地方时调：让整个窗口都算变了
     pub redraw_all: Box<dyn Fn()>,
     /// 鼠标在窗口的哪里（逻辑像素，从窗口左上角算）：0 窗口内容，1 标题栏（拖动、双击最大化、右键系统菜单），2 最大化按钮
@@ -242,7 +267,8 @@ thread_local! {
 /// - Slint 只把它自己知道变了的地方交给系统。Windows 要窗口重画时（窗口藏起来又显示、移出屏幕的部分又移回来、
 ///   显示器睡醒、远程桌面换了显示设置……），没变的地方它一个像素也不交，那里就是透明的，露出窗口后面的东西。
 ///   所以系统要重画一块地方时先调 redraw_all（让整个窗口都算变了），再照常交给 Slint 画。
-/// - 在窗口上挂这个版本的版本号：以后的新版打开时认出开着的是旧版，把它换掉（见 activate_existing_window）。
+/// - 主界面的窗口上挂这个版本的版本号：以后的新版打开时认出开着的是旧版，把它换掉（见 activate_existing_window）。
+/// - 大小固定的窗口（安装界面）最上面那条不能改大小。
 ///
 /// 在窗口建出来的那一刻接上（WH_CBT 钩子，只看界面线程）：Slint 建好窗口马上画第一帧、显示出来，晚了会先闪一下系统的标题栏。
 /// 万一没等到（窗口类名变了之类），事件循环跑起来以后再接，接上后让系统重算边框
@@ -253,6 +279,32 @@ pub fn hook_main_window<T: ComponentHandle + 'static>(ui: slint::Weak<T>, window
     let cbt = unsafe { SetWindowsHookExW(WH_CBT, Some(cbt_proc), None, GetCurrentThreadId()) }.ok();
     PENDING.set(Some(Pending { cbt, hook }));
     slint::Timer::single_shot(Duration::ZERO, move || attach_late(ui, 100));
+    // 窗口是事件循环跑起来以后才建的，建好了再看要不要缩
+    slint::Timer::single_shot(Duration::ZERO, || fit_fixed_window(40));
+}
+
+/// 大小固定的窗口（安装界面）：系统按带标题栏算的窗口大小，标题栏收回来给了窗口内容，内容就多出标题栏那么高。缩回去
+fn fit_fixed_window(tries: u32) {
+    let hwnd = MAIN_HWND.get();
+    if hwnd == 0 {
+        if tries > 0 {
+            slint::Timer::single_shot(Duration::from_millis(25), move || fit_fixed_window(tries - 1));
+        }
+        return;
+    }
+    let hwnd = HWND(hwnd as *mut _);
+    if resizable(hwnd) {
+        return;
+    }
+    unsafe {
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_ok() {
+            let flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+            let _ = SetWindowPos(hwnd, None, 0, 0, rect.right - rect.left, rect.bottom - rect.top - caption_height(hwnd), flags);
+            // 已经画过一帧的话，缩完整个重画（系统要重画时 main_window_proc 让 Slint 整个窗口都画）
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
 }
 
 /// 等主窗口建出来：建出来的那一刻（还没收到任何消息）接上
@@ -310,12 +362,15 @@ fn attach_late<T: ComponentHandle + 'static>(ui: slint::Weak<T>, tries: u32) {
 
 /// hook 在窗口销毁时（WM_NCDESTROY）由 main_window_proc 放掉，挂的版本号也是那时摘掉
 fn attach(hwnd: HWND, hook: Rc<Hook>) -> bool {
+    let main = hook.window.main;
     let data = Rc::into_raw(hook);
     unsafe {
         if SetWindowSubclass(hwnd, Some(main_window_proc), 1, data as usize).as_bool() {
             MAIN_HWND.set(hwnd.0 as isize);
-            // 以后的新版打开时靠它认出这个窗口是旧版（见 activate_existing_window）
-            let _ = SetPropW(hwnd, UI_LOCK, Some(HANDLE(version_mark() as *mut _)));
+            if main {
+                // 以后的新版打开时靠它认出这个窗口是旧版（见 activate_existing_window）
+                let _ = SetPropW(hwnd, UI_LOCK, Some(HANDLE(version_mark() as *mut _)));
+            }
             true
         } else {
             drop(Rc::from_raw(data));
@@ -368,9 +423,9 @@ unsafe extern "system" fn main_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 }
                 let mut point = POINT { x: lparam.0 as i16 as i32, y: (lparam.0 >> 16) as i16 as i32 };
                 let _ = ScreenToClient(hwnd, &mut point);
-                // 最上面一条是改大小的边框（最大化时没有），两头斜着改
+                // 最上面一条是改大小的边框（最大化时、大小固定的窗口没有），两头斜着改
                 let border = frame_thickness(hwnd);
-                if point.y < border && !IsZoomed(hwnd).as_bool() {
+                if point.y < border && !IsZoomed(hwnd).as_bool() && resizable(hwnd) {
                     let mut client = RECT::default();
                     let _ = GetClientRect(hwnd, &mut client);
                     let code = if point.x < border * 2 {
@@ -426,12 +481,15 @@ unsafe extern "system" fn main_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             }
             WM_NCACTIVATE => set_frame(&hook, Frame { active: wparam.0 != 0, ..hook.frame.get() }),
             WM_GETMINMAXINFO => {
-                // winit 按带系统标题栏的窗口算最小尺寸，标题栏收回来以后多出标题栏那么高
+                // winit 按带系统标题栏的窗口算最小尺寸（大小固定的窗口还有最大尺寸），标题栏收回来以后多出标题栏那么高
                 let result = DefSubclassProc(hwnd, msg, wparam, lparam);
                 let info = lparam.0 as *mut MINMAXINFO;
                 let caption = caption_height(hwnd);
                 if (*info).ptMinTrackSize.y > caption * 2 {
                     (*info).ptMinTrackSize.y -= caption;
+                }
+                if !resizable(hwnd) && (*info).ptMaxTrackSize.y > caption * 2 {
+                    (*info).ptMaxTrackSize.y -= caption;
                 }
                 return result;
             }
@@ -443,10 +501,20 @@ unsafe extern "system" fn main_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 MAIN_HWND.set(0);
                 drop(ManuallyDrop::into_inner(hook));
             }
+            message if message == show_update_message() && hook.window.main => {
+                let hook = Rc::clone(&hook);
+                slint::Timer::single_shot(Duration::ZERO, move || (hook.window.show_update)());
+                return LRESULT(0);
+            }
             _ => {}
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
+}
+
+/// 窗口能拖着改大小（大小固定的窗口 winit 会去掉 WS_THICKFRAME）
+fn resizable(hwnd: HWND) -> bool {
+    unsafe { GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_THICKFRAME.0 != 0 }
 }
 
 /// 窗口四边看不见的那圈边框（拖着改大小的地方）有多宽
@@ -544,7 +612,12 @@ fn mutex_exists(name: PCWSTR) -> bool {
 }
 
 pub fn start_core() -> bool {
-    std::process::Command::new(core_exe()).creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS).spawn().is_ok()
+    start_core_in(&exe_dir())
+}
+
+/// 打开 dir 里的后台（安装程序装完用）
+pub fn start_core_in(dir: &Path) -> bool {
+    std::process::Command::new(dir.join("SuanNIAO-core.exe")).creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS).spawn().is_ok()
 }
 
 pub fn ensure_core_running() {
@@ -559,17 +632,22 @@ pub fn stop_core() -> bool {
     stop_core_named(CORE_LOCK, CORE_TRAY)
 }
 
-/// `SuanNIAO.exe --quit`（安装程序覆盖文件、卸载之前用）：这个文件夹里的程序开着的主界面和后台都关掉。
-/// 别的文件夹里的副本开着的不碰
+/// `SuanNIAO.exe --quit`（0.7.6 以前的安装程序覆盖文件、卸载之前用）：这个文件夹里的程序开着的主界面和后台都关掉
 pub fn quit_running() {
-    let here = exe_dir();
-    let ours = |hwnd: HWND| window_exe_dir(hwnd).is_some_and(|dir| same_dir(&dir, &here));
-    if let Some((hwnd, _)) = running_ui(UI_LOCK).filter(|&(hwnd, _)| ours(hwnd)) {
+    quit_running_in(&exe_dir());
+}
+
+/// 关掉 dir 里的程序开着的主界面和后台（安装覆盖文件、卸载之前）。别的文件夹里的副本开着的不碰。
+/// 返回后台刚才在不在跑（装完再打开它）
+pub fn quit_running_in(dir: &Path) -> bool {
+    if let Some((hwnd, _)) = running_ui(UI_LOCK, Some(dir)) {
         close_and_wait(hwnd);
     }
-    if unsafe { FindWindowW(CORE_TRAY, PCWSTR::null()) }.is_ok_and(ours) {
+    let core = unsafe { FindWindowW(CORE_TRAY, PCWSTR::null()) }.is_ok_and(|hwnd| window_in(hwnd, dir));
+    if core {
         stop_core();
     }
+    core
 }
 
 /// 改名前的后台（phonepad-core.exe）还在跑：一定比这个版本旧，让它退出。

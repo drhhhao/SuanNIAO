@@ -7,11 +7,14 @@
 //! 首页每秒读一次后台写的 status.json，显示手机连接状态、同步回执。
 //! 设置页可以导入遥控器映射（读本机的数据或它导出的文件，只读不写），先预览勾选，再新建一页「遥控器」。
 //! 多套方案、撤销重做、复制粘贴动作、预设、已保存的序列、录按键、导出导入在 tools.rs；撤销的记录在 history.rs。
+//! 检查更新在 update.rs；安装、卸载（`--setup` / `--uninstall`，安装包运行的）在 setup.rs。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod history;
+mod setup;
 mod tools;
+mod update;
 mod win;
 
 use std::cell::{Cell, RefCell};
@@ -127,7 +130,7 @@ fn with_ctx(f: impl FnOnce(&Rc<Ctx>)) {
 }
 
 /// 界面自己的小状态，存在 ui.json（不放进配置：不进撤销记录，也不用同步给手机）：
-/// autostartAsked 问过开机自启没有，tutorialSeen 看过（或跳过）使用教程没有
+/// autostartAsked 问过开机自启没有，tutorialSeen 看过（或跳过）使用教程没有，lastVersion 上次打开的版本（更新以后提示一声）
 fn ui_state_path() -> std::path::PathBuf {
     config::data_dir().join("ui.json")
 }
@@ -149,8 +152,12 @@ fn ui_flag(key: &str) -> bool {
 
 /// 在 ui.json 里记下一项（别的项原样留着）
 fn save_ui_flag(key: &str) {
+    save_ui_value(key, serde_json::Value::Bool(true));
+}
+
+fn save_ui_value(key: &str, value: serde_json::Value) {
     let mut state = read_ui_state();
-    state.insert(key.to_string(), serde_json::Value::Bool(true));
+    state.insert(key.to_string(), value);
     let _ = std::fs::create_dir_all(config::data_dir());
     if let Ok(text) = serde_json::to_string_pretty(&serde_json::Value::Object(state)) {
         let _ = std::fs::write(ui_state_path(), text + "\n");
@@ -158,12 +165,19 @@ fn save_ui_flag(key: &str) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    // 安装程序覆盖文件、卸载之前运行 `SuanNIAO.exe --quit`：只关掉开着的蒜鸟，自己不打开窗口
-    if std::env::args().any(|a| a == "--quit") {
+    let args: Vec<String> = std::env::args().collect();
+    // 安装包运行的 `SuanNIAO.exe --setup`，系统「应用」里卸载运行的 `SuanNIAO.exe --uninstall`：开安装界面，不开主界面
+    if args.iter().any(|a| a == "--setup" || a == "--uninstall") {
+        std::process::exit(setup::run(&args));
+    }
+    // 0.7.6 的安装程序覆盖文件、卸载之前运行 `SuanNIAO.exe --quit`：只关掉开着的蒜鸟，自己不打开窗口
+    if args.iter().any(|a| a == "--quit") {
         win::quit_running();
         return Ok(());
     }
-    if win::activate_existing_window() {
+    // `--show-update`：托盘里点了「更新到 x」。主界面开着就让它打开更新窗口
+    let show_update = args.iter().any(|a| a == "--show-update");
+    if win::activate_existing_window(show_update) {
         return Ok(());
     }
     // 改名前（0.7.4 以前内部叫 PhonePad）的后台先退出，再把它的数据文件夹、开机自启换成新的
@@ -283,6 +297,8 @@ fn main() -> Result<(), slint::PlatformError> {
         win::hook_main_window(
             ui.as_weak(),
             win::MainWindow {
+                main: true,
+                show_update: Box::new(update::show_requested),
                 redraw_all: Box::new(move || {
                     if let Some(ui) = repaint.upgrade() {
                         ui.set_repaint_all(!ui.get_repaint_all());
@@ -305,6 +321,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_minimize_window(|| win::window_command(win::WindowCommand::Minimize));
     ui.on_toggle_maximize(|| win::window_command(win::WindowCommand::ToggleMaximize));
     ui.on_close_window(|| win::window_command(win::WindowCommand::Close));
+    update::start(&ui, show_update);
     ui.run()?;
     ctx.flush();
     Ok(())
@@ -760,7 +777,7 @@ fn settings_diff(a: &Settings, b: &Settings) -> Option<(&'static str, &'static s
     let (t1, t2) = (&a.touchpad, &b.touchpad);
     let (v1, v2) = (&a.voice, &b.voice);
     let (k1, k2) = (&a.triggers, &b.triggers);
-    let fields: [(bool, &str, &str); 16] = [
+    let fields: [(bool, &str, &str); 17] = [
         (t1.sensitivity != t2.sensitivity, "sensitivity", "指针速度"),
         (t1.acceleration != t2.acceleration, "acceleration", "指针加速"),
         (t1.scroll_speed != t2.scroll_speed, "scroll", "滚动速度"),
@@ -770,6 +787,7 @@ fn settings_diff(a: &Settings, b: &Settings) -> Option<(&'static str, &'static s
         (v1.delay_ms != v2.delay_ms, "delay", "停多久算说完"),
         (v1.enter_after != v2.enter_after, "enter-after", "发送后自动按回车"),
         (v1.paste != v2.paste, "paste", "文字上屏方式"),
+        (a.clipboard_sync != b.clipboard_sync, "clip-sync", "和手机同步剪贴板"),
         (k1.double_click_ms != k2.double_click_ms, "double", "双击间隔"),
         (k1.long_press_ms != k2.long_press_ms, "long", "长按时间"),
         (k1.repeat_delay_ms != k2.repeat_delay_ms, "repeat-delay", "连发延迟"),
@@ -1286,6 +1304,7 @@ impl Ctx {
         ui.set_send_delay(s.voice.delay_ms as f32 / 1000.0);
         ui.set_enter_after(s.voice.enter_after);
         ui.set_input_mode(if s.voice.paste { 1 } else { 0 });
+        ui.set_clip_sync(s.clipboard_sync);
         ui.set_double_click_ms(s.triggers.double_click_ms as i32);
         ui.set_long_press_ms(s.triggers.long_press_ms as i32);
         ui.set_repeat_delay_ms(s.triggers.repeat_delay_ms as i32);
@@ -2463,6 +2482,7 @@ impl Ctx {
             s.voice.delay_ms = (ui.get_send_delay() * 1000.0).round().max(300.0) as u32;
             s.voice.enter_after = ui.get_enter_after();
             s.voice.paste = ui.get_input_mode() == 1;
+            s.clipboard_sync = ui.get_clip_sync();
             s.triggers.double_click_ms = ui.get_double_click_ms().max(100) as u32;
             s.triggers.long_press_ms = ui.get_long_press_ms().max(200) as u32;
             s.triggers.repeat_delay_ms = ui.get_repeat_delay_ms().clamp(150, 1000) as u32;

@@ -336,6 +336,8 @@ pub struct Settings {
     pub voice: VoiceSettings,
     pub triggers: TriggerSettings,
     pub autostart: bool,
+    /// 和手机同步剪贴板里的文字：手机上复制的，回到蒜鸟时传给电脑；电脑上复制的，传给手机
+    pub clipboard_sync: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -399,6 +401,7 @@ impl Default for Settings {
             voice: VoiceSettings::default(),
             triggers: TriggerSettings::default(),
             autostart: false,
+            clipboard_sync: true,
             extra: Map::new(),
         }
     }
@@ -659,6 +662,8 @@ impl Config {
                 "scrollSpeed": s.touchpad.scroll_speed, "naturalScroll": s.touchpad.natural_scroll,
             },
             "voice": {"autoSend": s.voice.auto_send, "delayMs": s.voice.delay_ms},
+            // 关着时手机不读剪贴板、不发过来
+            "clipSync": s.clipboard_sync,
             "triggers": {
                 "doubleClickMs": s.triggers.double_click_ms, "longPressMs": s.triggers.long_press_ms,
                 "repeatDelayMs": s.triggers.repeat_delay_ms, "repeatIntervalMs": s.triggers.repeat_interval_ms,
