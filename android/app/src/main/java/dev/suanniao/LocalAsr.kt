@@ -2,6 +2,7 @@ package dev.suanniao
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.AssetManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -26,8 +27,10 @@ import kotlin.math.log10
 /**
  * 手机本地的流式语音识别：蒜鸟自己录音，用 sherpa-onnx 跑 X-ASR 中英模型，边说边出字、自带标点，不用联网。
  *
- * 模型放在 /sdcard/Android/data/dev.suanniao/files/models/<名字>/ 下，一个目录一个模型：
- * tokens.txt 加 encoder / decoder / joiner 三个 .onnx。
+ * 一个目录一个模型：tokens.txt 加 encoder / decoder / joiner 三个 .onnx，目录名就是模型的名字。
+ * 正式版的安装包里带着 x-asr-480ms（assets 的 models/ 下，直接从安装包里读，不用先解压出来）；
+ * 用 adb 推到 /sdcard/Android/data/dev.suanniao/files/models/<名字>/ 下的也能用（比如 960ms 那档），
+ * 和安装包里的同名时用安装包里的。
  *
  * 一次按住（或锁定）从头到尾只用一个识别流、中途不重置：句子之间的「。」要等听到下一句开头才出，
  * 重置会把它丢掉；正好在重置那一刻说的字也会被切坏。实测这样识别出的文字只会往后追加，可以边说边打。
@@ -51,40 +54,59 @@ object LocalAsr {
         fun onDone(text: String, error: String?)
     }
 
-    private class Model(val dir: File, val recognizer: OnlineRecognizer) {
+    /** 安装包里放模型的目录（assets 下） */
+    private const val BUNDLED = "models"
+
+    /**
+     * 一个语音模型。name 是目录名，菜单里按它显示（480ms → 快，960ms → 更准）；
+     * 安装包里带的，asset 是它在 assets 里的目录；手机存储里的，dir 是它的目录。
+     */
+    data class Model(val name: String, val dir: File? = null, val asset: String? = null)
+
+    private class Loaded(val model: Model, val recognizer: OnlineRecognizer) {
         var users = 0
         var retired = false
     }
 
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
-    private var current: Model? = null
-    private var loading: File? = null
-    private var failed: Pair<File, String>? = null
+    private var current: Loaded? = null
+    private var loading: Model? = null
+    private var failed: Pair<Model, String>? = null
+    /** 读安装包里的模型用（models() 时记下 App 的） */
+    @Volatile private var assetManager: AssetManager? = null
     /** 解码串行：上一次松手后的收尾和下一次按住可能同时在算 */
     private val decodeLock = Any()
     private val releaseIdle = Runnable { synchronized(lock) { current?.let(::retire) } }
 
     fun modelsRoot(context: Context) = File(context.getExternalFilesDir(null), "models")
 
-    /** 手机上装好的模型（文件齐全的目录），按名字排序 */
-    fun models(context: Context): List<File> =
-        modelsRoot(context).listFiles()?.filter { it.isDirectory && files(it) != null }?.sortedBy { it.name }.orEmpty()
+    /** 能用的模型（文件齐全的），按名字排序：安装包里带的，加上手机存储里另外放的（和安装包里同名的不算） */
+    fun models(context: Context): List<Model> {
+        val am = context.applicationContext.assets.also { assetManager = it }
+        val bundled = am.list(BUNDLED).orEmpty()
+            .filter { name -> files(am.list("$BUNDLED/$name").orEmpty().toList(), "$BUNDLED/$name") != null }
+            .map { Model(it, asset = "$BUNDLED/$it") }
+        val local = modelsRoot(context).listFiles().orEmpty()
+            .filter { dir -> dir.isDirectory && bundled.none { it.name == dir.name } && files(dir.list().orEmpty().toList(), dir.path) != null }
+            .map { Model(it.name, dir = it) }
+        return (bundled + local).sortedBy { it.name }
+    }
 
-    fun isLoaded(dir: File) = synchronized(lock) { current?.dir == dir }
+    fun isLoaded(model: Model) = synchronized(lock) { current?.model == model }
 
-    /** 模型每攒多长的声音识别一次（毫秒），也就是出字的间隔：看目录名（x-asr-960ms → 960），看不出来 = 0 */
-    fun chunkMs(dir: File): Long = Regex("""(\d+)ms""").find(dir.name)?.groupValues?.get(1)?.toLongOrNull() ?: 0
+    /** 模型每攒多长的声音识别一次（毫秒），也就是出字的间隔：看名字（x-asr-960ms → 960），看不出来 = 0 */
+    fun chunkMs(model: Model): Long = Regex("""(\d+)ms""").find(model.name)?.groupValues?.get(1)?.toLongOrNull() ?: 0
 
     /** 后台加载模型，第一次要两三秒；已经加载或正在加载就什么都不做。 */
-    fun preload(dir: File) {
+    fun preload(model: Model) {
         main.removeCallbacks(releaseIdle)
         synchronized(lock) {
-            if (current?.dir == dir || loading == dir) return
-            loading = dir
+            if (current?.model == model || loading == model) return
+            loading = model
             failed = null
         }
-        thread(name = "asr-load", isDaemon = true) { load(dir) }
+        thread(name = "asr-load", isDaemon = true) { load(model) }
     }
 
     /** App 退到后台时调用：过一阵还没回来就释放模型，回来时 preload 会取消释放。 */
@@ -102,30 +124,40 @@ object LocalAsr {
         }
     }
 
-    private class Files(val tokens: File, val encoder: File, val decoder: File, val joiner: File)
+    /** 模型的四个文件：文件路径，或者在安装包里的路径 */
+    private class Files(val tokens: String, val encoder: String, val decoder: String, val joiner: String)
 
-    private fun files(dir: File): Files? {
-        val onnx = dir.listFiles { f -> f.name.endsWith(".onnx") }?.toList() ?: return null
+    /** names 是模型目录里的文件名，base 是目录 */
+    private fun files(names: List<String>, base: String): Files? {
+        val onnx = names.filter { it.endsWith(".onnx") }
         // 有量化版（int8）就用量化版：小一半多、更快，准确率几乎一样
-        fun pick(part: String) = onnx.filter { part in it.name }.minByOrNull { if ("int8" in it.name) 0 else 1 }
-        val tokens = File(dir, "tokens.txt").takeIf { it.isFile } ?: return null
-        return Files(tokens, pick("encoder") ?: return null, pick("decoder") ?: return null, pick("joiner") ?: return null)
+        fun pick(part: String) = onnx.filter { part in it }.minByOrNull { if ("int8" in it) 0 else 1 }?.let { "$base/$it" }
+        if ("tokens.txt" !in names) return null
+        return Files("$base/tokens.txt", pick("encoder") ?: return null, pick("decoder") ?: return null, pick("joiner") ?: return null)
     }
 
-    private fun load(dir: File) {
+    private fun files(model: Model): Files? = when {
+        model.asset != null -> assetManager?.list(model.asset)?.let { files(it.toList(), model.asset) }
+        model.dir != null -> model.dir.list()?.let { files(it.toList(), model.dir.path) }
+        else -> null
+    }
+
+    private fun load(model: Model) {
         val t0 = SystemClock.uptimeMillis()
         val result = runCatching {
-            val f = files(dir) ?: error("模型文件不全")
+            val f = files(model) ?: error("模型文件不全")
             OnlineRecognizer(
+                // 安装包里的模型让 sherpa-onnx 直接从安装包里读（路径是 assets 里的）
+                assetManager = if (model.asset != null) assetManager else null,
                 config = OnlineRecognizerConfig(
                     featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
                     modelConfig = OnlineModelConfig(
                         transducer = OnlineTransducerModelConfig(
-                            encoder = f.encoder.path,
-                            decoder = f.decoder.path,
-                            joiner = f.joiner.path,
+                            encoder = f.encoder,
+                            decoder = f.decoder,
+                            joiner = f.joiner,
                         ),
-                        tokens = f.tokens.path,
+                        tokens = f.tokens,
                         numThreads = 2,
                     ),
                     enableEndpoint = false, // 不断句、不重置，见类注释
@@ -134,36 +166,37 @@ object LocalAsr {
             )
         }
         synchronized(lock) {
-            if (loading != dir) { // 加载期间换了模型，这个不要了
+            if (loading != model) { // 加载期间换了模型，这个不要了
                 result.getOrNull()?.release()
                 return
             }
             loading = null
             result.onSuccess { recognizer ->
                 current?.let(::retire)
-                current = Model(dir, recognizer)
-            }.onFailure { failed = dir to (it.message ?: it.javaClass.simpleName) }
+                current = Loaded(model, recognizer)
+            }.onFailure { failed = model to (it.message ?: it.javaClass.simpleName) }
         }
-        result.onSuccess { Log.i(LinkService.TAG, "语音模型 ${dir.name} 加载完成，用时 ${SystemClock.uptimeMillis() - t0} ms") }
-            .onFailure { Log.e(LinkService.TAG, "语音模型 ${dir.name} 加载失败", it) }
+        val name = model.name + if (model.asset != null) "（安装包里的）" else ""
+        result.onSuccess { Log.i(LinkService.TAG, "语音模型 $name 加载完成，用时 ${SystemClock.uptimeMillis() - t0} ms") }
+            .onFailure { Log.e(LinkService.TAG, "语音模型 $name 加载失败", it) }
     }
 
-    private fun acquire(dir: File): Model? = synchronized(lock) { current?.takeIf { it.dir == dir }?.also { it.users++ } }
+    private fun acquire(model: Model): Loaded? = synchronized(lock) { current?.takeIf { it.model == model }?.also { it.users++ } }
 
-    private fun release(model: Model) = synchronized(lock) {
-        model.users--
-        if (model.retired && model.users == 0) model.recognizer.release()
+    private fun release(loaded: Loaded) = synchronized(lock) {
+        loaded.users--
+        if (loaded.retired && loaded.users == 0) loaded.recognizer.release()
     }
 
     /** 不再给新的识别用；正在用它的识别结束后才真正释放。调用时要持有 lock。 */
-    private fun retire(model: Model) {
-        model.retired = true
-        if (current === model) current = null
-        if (model.users == 0) model.recognizer.release()
+    private fun retire(loaded: Loaded) {
+        loaded.retired = true
+        if (current === loaded) current = null
+        if (loaded.users == 0) loaded.recognizer.release()
     }
 
-    private fun loadState(dir: File): Pair<Boolean, String?> = synchronized(lock) {
-        (loading == dir) to failed?.takeIf { it.first == dir }?.second
+    private fun loadState(model: Model): Pair<Boolean, String?> = synchronized(lock) {
+        (loading == model) to failed?.takeIf { it.first == model }?.second
     }
 
     // ───────── 文字整理 ─────────
@@ -194,7 +227,7 @@ object LocalAsr {
      * 录音和识别各一个线程：识别偶尔慢一点也不会丢音。模型还没加载好时录到的音先攒着，好了再一起识别。
      * 回调都在主线程。wav 不为空时（调试用）不录音，按实际速度把这个文件当麦克风输入，放完自己收尾。
      */
-    class Dictation(private val dir: File, private val listener: Listener, private val wav: File? = null) {
+    class Dictation(private val model: Model, private val listener: Listener, private val wav: File? = null) {
         @Volatile private var stopping = false
         @Volatile private var cancelled = false
         @Volatile private var micError: String? = null
@@ -202,7 +235,7 @@ object LocalAsr {
         private val end = FloatArray(0)
 
         fun start() {
-            preload(dir)
+            preload(model)
             thread(name = "asr-mic", isDaemon = true) { if (wav != null) replay(wav) else record() }
             thread(name = "asr-decode", isDaemon = true) { decode() }
         }
@@ -308,7 +341,7 @@ object LocalAsr {
         }
 
         private fun decode() {
-            var model: Model? = null
+            var loaded: Loaded? = null
             var stream: OnlineStream? = null
             var text = ""
             var audioSamples = 0L
@@ -318,11 +351,11 @@ object LocalAsr {
                 val early = ArrayList<FloatArray>()
                 var ended = false
                 val waitFrom = SystemClock.uptimeMillis()
-                while (model == null) {
+                while (loaded == null) {
                     if (cancelled) return
-                    model = acquire(dir)
-                    if (model != null) break
-                    val (loading, error) = loadState(dir)
+                    loaded = acquire(model)
+                    if (loaded != null) break
+                    val (loading, error) = loadState(model)
                     val failure = when {
                         error != null -> "语音模型加载失败：$error"
                         ended && early.isEmpty() -> micError ?: "" // 什么都没录到，不用等模型了
@@ -334,11 +367,11 @@ object LocalAsr {
                         done("", failure.ifEmpty { null })
                         return
                     }
-                    if (!loading) preload(dir) // 刚好被释放了
+                    if (!loading) preload(model) // 刚好被释放了
                     val chunk = queue.poll(50, TimeUnit.MILLISECONDS) ?: continue
                     if (chunk === end) ended = true else early += chunk
                 }
-                val recognizer = (model ?: return).recognizer
+                val recognizer = (loaded ?: return).recognizer
                 val s = recognizer.createStream().also { stream = it }
                 main.post { if (!cancelled) listener.onReady() }
 
@@ -394,7 +427,7 @@ object LocalAsr {
                 done(withEnding(text), "语音识别出错：${e.message ?: e.javaClass.simpleName}")
             } finally {
                 stream?.release()
-                model?.let(::release)
+                loaded?.let(::release)
             }
         }
 

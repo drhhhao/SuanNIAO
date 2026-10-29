@@ -3911,7 +3911,7 @@ dependencies = [
 
 [[package]]
 name = "suanniao-core"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "embed-resource",
  "serde_json",
@@ -3921,7 +3921,7 @@ dependencies = [
 
 [[package]]
 name = "suanniao-ui"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "embed-resource",
  "raw-window-handle",

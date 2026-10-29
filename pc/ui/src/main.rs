@@ -158,6 +158,11 @@ fn save_ui_flag(key: &str) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // 安装程序覆盖文件、卸载之前运行 `SuanNIAO.exe --quit`：只关掉开着的蒜鸟，自己不打开窗口
+    if std::env::args().any(|a| a == "--quit") {
+        win::quit_running();
+        return Ok(());
+    }
     if win::activate_existing_window() {
         return Ok(());
     }

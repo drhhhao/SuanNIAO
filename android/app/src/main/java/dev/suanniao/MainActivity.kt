@@ -1032,7 +1032,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
 
     private fun count(text: String) = text.codePointCount(0, text.length)
 
-    /** 语音没发出去的字��接在之前没发的后面存起来 */
+    /** 语音没发出去的字，接在之前没发的后面存起来 */
     private fun stash(text: String) {
         val old = pendingText()
         val joined = when {
@@ -1168,9 +1168,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         section("语音识别")
         val models = LocalAsr.models(this@MainActivity)
         val model = chosenModel()
-        models.forEach { dir ->
-            radio(modelTitle(dir), modelSubtitle(dir), dir == model) {
-                chooseAsr(dir.name)
+        models.forEach { m ->
+            radio(modelTitle(m), modelSubtitle(m), m == model) {
+                chooseAsr(m.name)
                 s.refresh()
             }
         }
@@ -1201,11 +1201,17 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             aboutOpen = !aboutOpen
             s.refresh()
         }
-        if (aboutOpen) aboutDetails().forEach { line ->
-            view(overlays.text(line, 13f, 650, palette.sub).apply {
-                setLineSpacing(dp(2).toFloat(), 1f)
-                setPadding(dp(24), dp(2), dp(24), dp(6))
-            })
+        if (aboutOpen) {
+            aboutDetails().forEach { line ->
+                view(overlays.text(line, 13f, 650, palette.sub).apply {
+                    setLineSpacing(dp(2).toFloat(), 1f)
+                    setPadding(dp(24), dp(2), dp(24), dp(6))
+                })
+            }
+            row("开源许可", "蒜鸟用到的开源软件、语音模型和字体") {
+                s.dismiss()
+                showLicenses()
+            }
         }
         row("调试", if (debugOpen) "给开发看的" else "测延迟、电脑后台内存", trailing = null) {
             debugOpen = !debugOpen
@@ -1224,15 +1230,15 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         }
     }
 
-    private fun modelTitle(dir: File) = when {
-        "480" in dir.name -> "本地识别 · 快（推荐）"
-        "960" in dir.name -> "本地识别 · 更准"
-        else -> "本地识别 · ${dir.name}"
+    private fun modelTitle(m: LocalAsr.Model) = when {
+        "480" in m.name -> "本地识别 · 快（推荐）"
+        "960" in m.name -> "本地识别 · 更准"
+        else -> "本地识别 · ${m.name}"
     }
 
-    private fun modelSubtitle(dir: File) = when {
-        "480" in dir.name -> "在手机上识别，不用联网，带标点，出字快"
-        "960" in dir.name -> "出字慢一点，错字少一点"
+    private fun modelSubtitle(m: LocalAsr.Model) = when {
+        "480" in m.name -> "在手机上识别，不用联网，带标点，出字快"
+        "960" in m.name -> "出字慢一点，错字少一点"
         else -> "在手机上识别，不用联网"
     }
 
@@ -1276,6 +1282,20 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
 
     private fun showGestureGuide() {
         setup.showGestureGuide { prefs.edit().putBoolean(KEY_GUIDE_SEEN, true).apply() }
+    }
+
+    /** 开源软件、语音模型和字体的许可（licenses.txt 最后接 Nunito 字体自带的 OFL 全文） */
+    private fun showLicenses() {
+        val text = listOf("licenses.txt", "fonts/Nunito-OFL.txt").joinToString("\n\n") { name ->
+            runCatching { assets.open(name).bufferedReader().use { it.readText().trim() } }.getOrDefault("")
+        }
+        overlays.sheet {
+            header("开源许可")
+            view(overlays.text(text, 12f, 600, palette.sub).apply {
+                setLineSpacing(dp(2).toFloat(), 1f)
+                setPadding(dp(24), dp(4), dp(24), dp(16))
+            })
+        }
     }
 
     /** 第一次见到触控板时说明一次手势 */
@@ -1557,7 +1577,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     // ───────── 语音识别设置 ─────────
 
     /** 语音按钮用哪个识别：选过的本地模型（没选过就用装好的，480ms 的优先）；null = 系统语音引擎 */
-    private fun chosenModel(): File? {
+    private fun chosenModel(): LocalAsr.Model? {
         val chosen = prefs.getString(KEY_ASR, null)
         if (chosen == ASR_SYSTEM) return null
         val models = LocalAsr.models(this)

@@ -75,8 +75,8 @@ class VoiceButton(
             refresh()
         }
 
-    /** 本地识别用的模型目录；null = 用系统语音识别 */
-    var localModel: File? = null
+    /** 本地识别用的模型；null = 用系统语音识别 */
+    var localModel: LocalAsr.Model? = null
     /** 本地识别时边说边往电脑上打字；false = 停顿一下（一句说完）再整句发 */
     var liveTyping = true
     /** 没连上电脑（待机时提示说的话会先存在手机上） */
@@ -701,7 +701,7 @@ class VoiceButton(
      * offline：这次没连上电脑（或说到一半断了）：不再往电脑上发，剩下的字收尾后存到手机上。
      */
     private inner class LocalPress(
-        model: File,
+        model: LocalAsr.Model,
         private val live: Boolean,
         private var previous: LocalPress?,
         wav: File? = null,

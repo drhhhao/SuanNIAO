@@ -744,7 +744,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             return body
         }
 
-        /** 放随状态换��卡片 */
+        /** 放随状态换的卡片 */
         fun holder(top: Float = 18f): FrameLayout = add(FrameLayout(context), top) as FrameLayout
 
         fun extra(v: View, top: Float = 16f) {

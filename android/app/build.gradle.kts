@@ -13,8 +13,8 @@ android {
         applicationId = "dev.suanniao"
         minSdk = 28
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.9.4"
+        versionCode = 20
+        versionName = "0.9.5"
         // 只给 64 位 ARM 手机用，本地语音识别的原生库只打这一种，安装包小很多
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -56,6 +56,40 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+// 正式版安装包里带上「快」那档语音模型（x-asr-480ms），装好就能用，不用另外下载。
+// 模型在仓库外面的 ../models/ 里（太大，进不了 GitHub），发版时 release.yml 先把它下载好。
+// 本机打的 debug 包默认不带（装得快），要带就加 -PbundleModel。
+val bundledModel = rootProject.file("../models/x-asr-480ms")
+val bundledModelFiles = listOf("encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt")
+
+/** 把模型的四个文件放到 assets 的 models/<模型名>/ 下 */
+abstract class StageModel : DefaultTask() {
+    @get:Input abstract val modelName: Property<String>
+    @get:InputFiles abstract val modelFiles: ConfigurableFileCollection
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        val missing = modelFiles.files.filterNot { it.isFile }
+        if (missing.isNotEmpty()) throw GradleException("要打进安装包的语音模型缺文件：${missing.joinToString { it.path }}")
+        val dir = outputDir.get().asFile.resolve("models/${modelName.get()}")
+        dir.deleteRecursively()
+        dir.mkdirs()
+        modelFiles.files.forEach { it.copyTo(dir.resolve(it.name)) }
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        if (variant.buildType != "release" && !providers.gradleProperty("bundleModel").isPresent) return@onVariants
+        val stage = tasks.register<StageModel>("stage${variant.name.replaceFirstChar { it.uppercase() }}Model") {
+            modelName.set(bundledModel.name)
+            modelFiles.from(bundledModelFiles.map { bundledModel.resolve(it) })
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(stage, StageModel::outputDir)
     }
 }
 

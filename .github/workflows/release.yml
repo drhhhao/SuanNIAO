@@ -61,21 +61,26 @@ jobs:
       - name: 编译
         working-directory: pc
         run: cargo build --release --locked
-      - name: 打包
+      # 安装包用 Inno Setup 做：固定用这个版本，下载后先核对指纹
+      - name: 装 Inno Setup
+        run: |
+          $exe = "$env:RUNNER_TEMP\innosetup-6.7.4.exe"
+          Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe -OutFile $exe
+          if ((Get-FileHash -Algorithm SHA256 $exe).Hash -ne 'A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C') { throw '下载的 Inno Setup 和记下的指纹对不上' }
+          $dir = "$env:RUNNER_TEMP\inno"
+          $p = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/PORTABLE=1','/CURRENTUSER',"/DIR=`"$dir`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0 -or -not (Test-Path "$dir\ISCC.exe")) { throw "Inno Setup 没装上（$($p.ExitCode)）" }
+          "ISCC=$dir\ISCC.exe" >> $env:GITHUB_ENV
+      - name: 做安装包
         env:
           VER: ${{ needs.check.outputs.pc }}
         run: |
-          $dir = "SuanNIAO-PC-$env:VER"
-          New-Item -ItemType Directory $dir | Out-Null
-          Copy-Item pc/target/release/SuanNIAO.exe, pc/target/release/SuanNIAO-core.exe $dir
-          # 说明文件换成 CRLF + BOM，老记事本打开也不乱码
-          $readme = (Get-Content -Raw -Encoding utf8 pc/dist/README.txt).Replace('{version}', $env:VER) -replace "`r?`n", "`r`n"
-          Set-Content -NoNewline -Encoding utf8BOM "$dir/README.txt" $readme
-          Compress-Archive -Path "$dir/*" -DestinationPath "$dir.zip"
+          & $env:ISCC "/DAppVersion=$env:VER" pc/installer/SuanNIAO.iss
+          if ($LASTEXITCODE -ne 0) { throw '安装包没做出来' }
       - uses: actions/upload-artifact@v7
         with:
           name: pc
-          path: SuanNIAO-PC-*.zip
+          path: pc/target/installer/SuanNIAO-PC-*-Setup.exe
           if-no-files-found: error
 
   android:
@@ -98,6 +103,17 @@ jobs:
           if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::仓库的加密变量里没有 SUANNIAO_KEYSTORE_BASE64"; exit 1; fi
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "SUANNIAO_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      # 「快」那档语音模型（x-asr-480ms）打进安装包（见 android/app/build.gradle.kts）。
+      # 模型太大进不了仓库，从 sherpa-onnx 的发布页下载，核对指纹，只取要用的四个文件
+      - name: 下载语音模型
+        run: |
+          name=sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/model.tar.bz2" "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$name.tar.bz2"
+          echo "fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74  $RUNNER_TEMP/model.tar.bz2" | sha256sum -c -
+          mkdir -p models/x-asr-480ms
+          tar xjf "$RUNNER_TEMP/model.tar.bz2" --strip-components=1 -C models/x-asr-480ms \
+            "$name/encoder.int8.onnx" "$name/decoder.onnx" "$name/joiner.int8.onnx" "$name/tokens.txt"
+          ls -l models/x-asr-480ms
       - name: 编译
         working-directory: android
         env:
@@ -110,6 +126,7 @@ jobs:
         run: |
           apk=android/app/build/outputs/apk/release/app-release.apk
           if [ ! -f "$apk" ]; then echo "::error::没生成签过名的 app-release.apk"; ls -R android/app/build/outputs/apk; exit 1; fi
+          if [ "$(unzip -l "$apk" | grep -c 'assets/models/x-asr-480ms/')" != 4 ]; then echo "::error::安装包里没带齐语音模型"; unzip -l "$apk" | grep assets/; exit 1; fi
           cp "$apk" "SuanNIAO-Android-$VER.apk"
       - uses: actions/upload-artifact@v7
         with:
@@ -139,9 +156,10 @@ jobs:
         run: |
           prev=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
           {
-            echo "**电脑**：下载 \`SuanNIAO-PC-$PC.zip\`，解压到一个固定的文件夹，双击 \`SuanNIAO.exe\`。"
+            echo "**电脑**（Windows 10 / 11）：下载 \`SuanNIAO-PC-$PC-Setup.exe\`，双击安装，不用管理员权限，装好后开始菜单里有「蒜鸟」。"
+            echo "Windows 提示「Windows 已保护你的电脑」时，点「更多信息」→「仍要运行」。以后更新也是下载新的安装包直接装，设置都会留着。"
             echo
-            echo "**手机**：下载 \`SuanNIAO-Android-$PHONE.apk\` 安装（只支持 64 位的安卓手机）。"
+            echo "**手机**：下载 \`SuanNIAO-Android-$PHONE.apk\` 安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用，不用另外下载、不用联网。"
             if [ -n "$prev" ]; then
               echo
               echo "### 和 $prev 比改了什么"

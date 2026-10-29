@@ -1,6 +1,6 @@
 [package]
 name = "suanniao-core"
-version = "0.7.5"
+version = "0.7.6"
 edition = "2021"
 description = "蒜鸟电脑端后台：托盘常驻、蓝牙串口服务、执行按键映射"
 

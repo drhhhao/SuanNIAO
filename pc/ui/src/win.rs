@@ -559,6 +559,19 @@ pub fn stop_core() -> bool {
     stop_core_named(CORE_LOCK, CORE_TRAY)
 }
 
+/// `SuanNIAO.exe --quit`（安装程序覆盖文件、卸载之前用）：这个文件夹里的程序开着的主界面和后台都关掉。
+/// 别的文件夹里的副本开着的不碰
+pub fn quit_running() {
+    let here = exe_dir();
+    let ours = |hwnd: HWND| window_exe_dir(hwnd).is_some_and(|dir| same_dir(&dir, &here));
+    if let Some((hwnd, _)) = running_ui(UI_LOCK).filter(|&(hwnd, _)| ours(hwnd)) {
+        close_and_wait(hwnd);
+    }
+    if unsafe { FindWindowW(CORE_TRAY, PCWSTR::null()) }.is_ok_and(ours) {
+        stop_core();
+    }
+}
+
 /// 改名前的后台（phonepad-core.exe）还在跑：一定比这个版本旧，让它退出。
 /// 要在搬数据文件夹之前：它开着日志文件，文件夹改不了名
 pub fn stop_legacy_core() {

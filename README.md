@@ -4,7 +4,15 @@
 
 把小米 13 变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接；语音在手机上识别（本地模型，不用联网），只把文字发给电脑。方案见上一级目录的 `方案.md`。
 
-## 当前版本：电脑端 0.7.5 · 手机端 0.9.4
+## 当前版本：电脑端 0.7.6 · 手机端 0.9.5
+
+- 电脑端 0.7.6 / 手机端 0.9.5：发版改成两端各一个安装包，下载下来装上就能用。
+  - 电脑端：`SuanNIAO-PC-版本-Setup.exe`（Inno Setup 做的，脚本 `pc/installer/SuanNIAO.iss`）。只给当前用户装，装在 `%LOCALAPPDATA%\Programs\SuanNIAO`，不用管理员权限；开始菜单里有「蒜鸟」，桌面快捷方式可选，装完可以直接打开。更新就是装新版的安装包，设置都留着。
+  - 安装界面是中文的，只有两步：选要不要桌面图标、点「安装」，然后是「安装完成」（勾着「打开蒜鸟」）。右上角的小图和完成页左边的竖图是蒜鸟。
+  - 装新版、卸载之前，安装程序先运行装好的 `SuanNIAO.exe --quit`：关掉同一个文件夹里的程序开着的主界面和后台，别处的副本（比如 `pc\target\release` 里的）不碰。
+  - 卸载（「设置 → 应用」里）：删掉指向安装目录的开机自启，再问要不要把设置（`%APPDATA%\SuanNIAO`）也删掉，默认不删；静默卸载不问、不删。
+  - 手机端：正式版安装包里带着「快」那档语音模型（x-asr-480ms），装好就能用，不用再推模型；安装包约 160 MB。模型直接从安装包里读（sherpa-onnx 从 assets 读），不用先解压出来，加载时间和放在手机存储里一样。「更准」那档（960ms）还是用 adb 推。
+  - 手机「关于」里加了「开源许可」：sherpa-onnx、X-ASR、ONNX Runtime、Nunito 字体的说明和许可证全文。
 
 - 电脑端 0.7.5 / 手机端 0.9.4：内部名字改成 SuanNIAO。
   - 电脑端：主界面 `SuanNIAO.exe`、后台 `SuanNIAO-core.exe`，数据文件夹 `%APPDATA%\SuanNIAO`；单实例的互斥量、托盘窗口类、开机自启（注册表 Run 里的 `SuanNIAO`）、排查用的环境变量（`SUANNIAO_TRACE`、`SUANNIAO_DRYRUN`）也换了名字。
@@ -98,10 +106,10 @@
   - 句子之间的「。」要等听到下一句开头才出，重置会丢标点，正好在重置时说的字也会被切坏。
   - 这样识别出的文字只会往后追加，所以可以边说边打：手机只发新增的字（`text`，`mode: "type"`，中间几段 `enter: false`）。
   - 松手后补 1 秒静音收尾，最后一句没有标点就补「。」。
-- **装模型**：模型不打进安装包，用 adb 推到 App 的专属目录（重装 App 不会丢，卸载会丢）。电脑上的模型在 `models\` 下，目录名就是菜单里显示的名字：
+- **装模型**：正式版安装包里带着 `x-asr-480ms`（放在 assets 的 `models/` 下，四个文件约 160 MB；发版时 `release.yml` 从上面的地址下载、核对指纹，`android/app/build.gradle.kts` 把它打进去）。本机打的 debug 包默认不带，装得快；要带就加 `-PbundleModel`（取自 `models\x-asr-480ms`）。
+  其他模型（比如 960ms）用 adb 推到 App 的专属目录（重装 App 不会丢，卸载会丢），和安装包里的同名时用安装包里的。电脑上的模型在 `models\` 下，目录名就是菜单里显示的名字：
 
 ```
-adb push models\x-asr-480ms /sdcard/Android/data/dev.suanniao/files/models/
 adb push models\x-asr-960ms /sdcard/Android/data/dev.suanniao/files/models/
 adb shell chmod -R 777 /sdcard/Android/data/dev.suanniao/files/models
 ```
@@ -124,11 +132,11 @@ adb shell chmod -R 777 /sdcard/Android/data/dev.suanniao/files/models
 | `pc/config` | 电脑端共用的配置：布局、映射、方案、设置；动作序列文字格式、预设、导出导入、从遥控器映射软件导入（Rust） |
 | `pc/core` | 后台：托盘、蓝牙串口服务、执行动作、剪贴板借用和还原、切换方案的桌面通知 |
 | `pc/ui` | 主界面（Rust + Slint） |
-| `pc/assets` | 图标；`app.rc.in` + `resource.rs` 是两个 exe 共用的资源模板（图标、版本信息），由各自的 build.rs 填好编进去 |
-| `pc/dist` | 电脑端压缩包里的说明文件 |
+| `pc/assets` | 图标、安装界面「安装完成」页的竖图 `installer-side.png`（都由 `tools/logo/make_icons.py` 生成）；`app.rc.in` + `resource.rs` 是两个 exe 共用的资源模板（图标、版本信息），由各自的 build.rs 填好编进去 |
+| `pc/installer` | 电脑端安装程序的脚本（Inno Setup）和安装界面的中文 |
 | `android` | 手机 App（Kotlin；第三方依赖只有 sherpa-onnx） |
 | `.github/workflows` | 自动发版的流水线 |
-| `models` | 本地语音模型（推到手机上用）和测试音频；太大，不进 GitHub 仓库 |
+| `models` | 本地语音模型（打进手机安装包、推到手机上用）和测试音频；太大，不进 GitHub 仓库 |
 | `tools` | 语音识别的测试脚本、接字的测试窗口 |
 | `archive/` | 旧草稿和每次大改前的源码备份；不进 GitHub 仓库 |
 
@@ -152,6 +160,8 @@ cd pc
 cargo build --release
 ```
 
+安装包（要先装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)）：编好上面两个程序后运行 `ISCC /DAppVersion=0.7.6 pc\installer\SuanNIAO.iss`，生成在 `pc\target\installer\`。
+
 开发时可以用 `cargo build --profile fastrel`（不做 LTO，增量编译，生成在 `pc\target\fastrel\`）。单元测试：`cargo test`（后台的剪贴板测试在自己建的窗口站里跑，不会动到正在用的剪贴板）。
 
 查触控板卡不卡：启动后台前设环境变量 `SUANNIAO_TRACE=文件路径`，后台把收到的每条消息和指针走的每一步连同时间记下来；再设 `SUANNIAO_DRYRUN=1` 就只记录、不真的动鼠标键盘（自动化测试用，免得点到正在用的窗口）。记下的文件可以拿 `playout.rs` 里的 `replay` 测试离线回放、换参数比较，用法写在那个测试上面。
@@ -168,13 +178,15 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 
 代码在 GitHub 私有仓库 `drhhhao/SuanNIAO`。推送到 `main` 以后，GitHub Actions（`.github/workflows/release.yml`）先看「电脑端版本 + 手机端版本」这一对发布过没有：
 
-- 没发布过：在 GitHub 的 Windows 机器上编电脑端，在 Linux 机器上编手机端正式版并签名，然后发一个 Release，名字像 `pc0.7.4-android0.9.3`，附带 `SuanNIAO-PC-0.7.4.zip` 和 `SuanNIAO-Android-0.9.3.apk`。
+- 没发布过：在 GitHub 的 Windows 机器上编电脑端、用 Inno Setup 6.7.4 做安装包，在 Linux 机器上下载语音模型、编手机端正式版并签名，然后发一个 Release，名字像 `pc0.7.6-android0.9.5`，附带 `SuanNIAO-PC-0.7.6-Setup.exe` 和 `SuanNIAO-Android-0.9.5.apk`。
 - 发布过：什么都不做。所以发新版就是改版本号、再推送。
 
 也可以在仓库网页的 Actions → 发版 → Run workflow 手动跑。
 
 - 电脑端在 GitHub 上编译时把 C 运行库静态链进 exe（`+crt-static`），别人的电脑没装 VC++ 运行库也能打开。
 - 手机正式版用发版密钥签名，和本机 debug 包的签名不一样，不能互相覆盖安装。
+- 下载的 Inno Setup 和语音模型都核对 SHA-256，换版本时 `release.yml` 里的地址和指纹要一起改；手机包里没带齐模型的四个文件就不发。
+- 电脑端安装包没有代码签名，Windows 第一次会提示「Windows 已保护你的电脑」，发布说明里写了怎么点过去。
 
 ## 通信（蓝牙串口，每行一条 JSON）
 
@@ -228,3 +240,5 @@ status.json 里和手机有关的：`device`、`phoneModel`、`phoneApp`、`conf
 | 新版换掉旧窗口（0.7.4） | 隔离副本：开着没挂版本号的 0.7.3 或挂了 0.7.3 的窗口时打开 0.7.4，旧窗口 0.05 秒内关掉，新版接上；开着 0.7.4 时再开 0.7.3 或 0.7.4，后开的自己退出，原窗口不动；前台一直没变。真机：用户开着的 0.7.3 窗口 0.07 秒后关掉，后台跟着换成 0.7.4，手机 1 秒后连回 |
 | 内部改名 SuanNIAO（0.7.5） | 真机从旧版换过来：打开新的 SuanNIAO.exe，开着的 PhonePad.exe 窗口和 phonepad-core.exe 0.15 秒内都退出，新后台 0.24 秒后启动；`%APPDATA%\PhonePad` 整个改名成 `%APPDATA%\SuanNIAO`，配置、日志、备份都在；开机自启从 Run 里的 `PhonePad` 换成指向新后台的 `SuanNIAO`；手机（旧 App 0.9.3）1.2 秒后连回，配置回执 1/1。单元测试配置 29 个、后台 14 个、主界面 2 个全过 |
 | 手机换新包名（0.9.4） | 真机：另外装上 `dev.suanniao` 调试版，从旧 App 复制设置（校验值一致）、语音模型和测试录音（10 个文件 md5 一致），给好蓝牙、麦克风、通知权限；新 App 不用重新选电脑，自己连上（App 0.9.4，配置回执对上），语音模型 x-asr-480ms 5 秒加载完；卸掉旧 App 后连接不断 |
+| 电脑端安装包（0.7.6） | 隔离测试（装到临时目录、不建桌面快捷方式、静默安装）：全新安装 1 秒装好，两个 exe 和编出来的一模一样，开始菜单「蒜鸟」指向安装目录，「设置 → 应用」里是「蒜鸟 0.7.6」。装好的蒜鸟开着（换了内部名字的副本，主界面加后台）时覆盖安装：安装程序先运行 `--quit`，0.14 秒把两个都关掉，再换文件，没弹「文件被占用」。卸载同样先关掉；指向安装目录的开机自启删掉，指向别处的不动；设置文件夹留着。别的文件夹里开着的蒜鸟（`pc\target\release` 里正在用的那份）全程没被关掉。安装界面截图：中文正常，按钮写「安装」，完成页是蒜鸟竖图，没点「完成」就不会打开蒜鸟。单元测试配置 29 个、后台 14 个、主界面 2 个全过 |
+| 手机安装包带模型（0.9.5） | 真机：带「快」模型的安装包 162 MB，装好不用推模型；模型直接从安装包里读，5.0 秒加载完（两次 5003、5029 毫秒），刚加载完进程内存约 427 MB、稳定后 337 MB；「⋯ → 关于 → 开源许可」显示四项说明和许可证全文 |
