@@ -1,0 +1,16 @@
+[workspace]
+members = ["config", "core", "ui"]
+resolver = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# 开发时截图检查用：和 release 一样优化，但不做 LTO、可以增量编译，编得快
+[profile.fastrel]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

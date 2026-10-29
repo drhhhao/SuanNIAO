@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="grid_cell" type="id" />
+    <item name="module_id" type="id" />
+</resources>

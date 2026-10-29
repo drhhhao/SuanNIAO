@@ -1,0 +1,28 @@
+#pragma code_page(65001)
+// build.rs 填好占位符写到 OUT_DIR 再编进 exe：
+// 图标（资源 ID 1，exe 文件图标和托盘图标都用它），版本信息（任务管理器里显示的名字是「文件说明」）
+1 ICON "{icon}"
+
+1 VERSIONINFO
+FILEVERSION {v1},{v2},{v3},0
+PRODUCTVERSION {v1},{v2},{v3},0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "{description}"
+            VALUE "FileVersion", "{version}"
+            VALUE "InternalName", "{exe}"
+            VALUE "OriginalFilename", "{exe}"
+            VALUE "ProductName", "蒜鸟"
+            VALUE "ProductVersion", "{version}"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

@@ -1,0 +1,24 @@
+# 编译产物
+pc/target/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+tools/logo/render/target/
+__pycache__/
+*.apk
+*.log
+*.err
+
+# 本机路径（Android SDK 在哪），每台电脑不一样
+android/local.properties
+
+# 语音模型单个 155 MB，超过 GitHub 一个文件 100 MB 的上限
+models/
+
+# 改名、改界面前的源码备份；进了 git 以后历史里都有，不用再传
+archive/
+
+# 发版签名密钥只放在本机和 GitHub 的加密变量里，绝不能进仓库
+*.jks
+*.keystore

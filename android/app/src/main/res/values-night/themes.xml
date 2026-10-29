@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="SuanNiao" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/pp_bg</item>
+    </style>
+    <color name="pp_bg">#000000</color>
+</resources>

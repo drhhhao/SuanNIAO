@@ -1,0 +1,10 @@
+[package]
+name = "sn-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+resvg = { version = "=0.48.1", default-features = false }
+
+[profile.release]
+opt-level = 2
