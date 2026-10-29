@@ -24,7 +24,7 @@ pub fn read_axonkey_profiles() -> Result<String, String> {
     if !source.is_dir() {
         return Err("这台电脑上没找到遥控器映射软件的数据（装过并打开过才有）".into());
     }
-    let temp = std::env::temp_dir().join(format!("phonepad-import-{}-{}", std::process::id(), crate::now_secs()));
+    let temp = std::env::temp_dir().join(format!("suanniao-import-{}-{}", std::process::id(), crate::now_secs()));
     let result = (|| {
         fs::create_dir_all(&temp).map_err(|e| format!("建临时目录失败：{e}"))?;
         for entry in fs::read_dir(&source).map_err(|e| format!("读数据文件夹失败：{e}"))? {

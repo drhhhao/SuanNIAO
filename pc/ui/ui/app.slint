@@ -174,7 +174,7 @@ global Motion {
 // ───────────────────────── 配色、图标 ─────────────────────────
 
 export global Theme {
-    // 截图检查用：强制深色（PhonePad.exe --dark，由主窗口设）
+    // 截图检查用：强制深色（SuanNIAO.exe --dark，由主窗口设）
     in-out property <bool> force-dark: false;
     out property <bool> dark: root.force-dark || Palette.color-scheme == ColorScheme.dark;
     out property <color> win: dark ? #0f0f10 : #ffffff;
@@ -8635,7 +8635,7 @@ export component AppWindow inherits Window {
     callback toast-clicked();
     in property <string> version;
     in property <string> folder;
-    // `PhonePad.exe --dark`：强制深色（std-widgets 的关于徽章也跟着深色）
+    // `SuanNIAO.exe --dark`：强制深色（std-widgets 的关于徽章也跟着深色）
     in property <bool> force-dark;
     changed force-dark => {
         Theme.force-dark = self.force-dark;

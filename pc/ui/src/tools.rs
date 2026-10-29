@@ -3,9 +3,9 @@
 
 use std::rc::Rc;
 
-use phonepad_config::actions;
-use phonepad_config::presets::presets;
-use phonepad_config::{sequence, transfer, SavedSequence};
+use suanniao_config::actions;
+use suanniao_config::presets::presets;
+use suanniao_config::{sequence, transfer, SavedSequence};
 use slint::platform::Key;
 
 use super::*;

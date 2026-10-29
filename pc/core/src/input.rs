@@ -269,11 +269,11 @@ pub fn scroll(dx: i32, dy: i32) {
     send(&inputs);
 }
 
-/// 按键名换成虚拟键码（名字表在 phonepad_config::key_code，和 axonkey 一样）；有一个不认识就返回 None
+/// 按键名换成虚拟键码（名字表在 suanniao_config::key_code，和 axonkey 一样）；有一个不认识就返回 None
 pub fn key_codes(names: &[String]) -> Option<Vec<u16>> {
     let mut vks: Vec<u16> = Vec::new();
     for name in names {
-        let vk = phonepad_config::key_code(name)?;
+        let vk = suanniao_config::key_code(name)?;
         if !vks.contains(&vk) {
             vks.push(vk);
         }
@@ -321,7 +321,7 @@ const KEY_REPEAT_INTERVAL: Duration = Duration::from_millis(80);
 
 /// 按住时要不要像实体键盘一样补发按下：修饰键、媒体键不补发，音量加减补发（和 axonkey 一样）
 fn auto_repeats(vk: u16) -> bool {
-    matches!(vk, 0xAE | 0xAF) || !(phonepad_config::actions::is_modifier(vk) || (0xAD..=0xB3).contains(&vk))
+    matches!(vk, 0xAE | 0xAF) || !(suanniao_config::actions::is_modifier(vk) || (0xAD..=0xB3).contains(&vk))
 }
 
 /// 按下并一直按着（直通）。同一个键被两个手机按键按着时只按一次，见 release_keys

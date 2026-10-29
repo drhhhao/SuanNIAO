@@ -1,11 +1,11 @@
-//! 蒜鸟电脑端后台（phonepad-core.exe）和主界面（PhonePad.exe）共用的配置。
-//! 产品名叫蒜鸟；exe、数据文件夹、互斥量这些内部名字还是改名前的 PhonePad，没跟着改。
+//! 蒜鸟电脑端后台（SuanNIAO-core.exe）和主界面（SuanNIAO.exe）共用的配置。
+//! 0.7.4 以前内部名字叫 PhonePad（PhonePad.exe、phonepad-core.exe、`%APPDATA%\PhonePad`），新版启动时把旧的换掉（见 move_legacy_data_dir）。
 //!
 //! 手机界面是一张网格（默认 4 列 × 8 行），上面摆若干模块：触控板、按键、语音输入框。
 //! 模块的位置和大小以「格」为单位，可以是小数（见 geometry）。
 //! 按键的单击 / 双击 / 长按各自对应一串动作，格式和 axonkey 的映射一致，方便导入（见 actions、axonkey）；
 //! 按住时可以触发一次长按、重复长按、连续单击（连发），或者像实体键盘一样一直按着（直通），见 HoldMode。
-//! 配置存在 `%APPDATA%\PhonePad\config.json`；主界面改完写文件，后台发现文件变了就重新读取并同步给手机。
+//! 配置存在 `%APPDATA%\SuanNIAO\config.json`；主界面改完写文件，后台发现文件变了就重新读取并同步给手机。
 //! 在手机上调好的布局由后台写回这个文件，主界面发现文件被改了会重新载入。
 
 pub mod actions;
@@ -19,7 +19,7 @@ pub mod sequence;
 pub mod transfer;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -781,8 +781,55 @@ pub struct Recent {
 
 pub const RECENT_MAX: usize = 8;
 
+fn app_data() -> PathBuf {
+    PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into()))
+}
+
 pub fn data_dir() -> PathBuf {
-    PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into())).join("PhonePad")
+    app_data().join("SuanNIAO")
+}
+
+/// 改名前（0.7.4 以前）的数据文件夹 `%APPDATA%\PhonePad` 搬成 `%APPDATA%\SuanNIAO`，新的已经有了就不动。
+/// 主界面和后台启动时、用到数据文件夹之前先调。搬了返回怎么搬的（写日志用）
+pub fn move_legacy_data_dir() -> Option<&'static str> {
+    move_dir_once(&app_data().join("PhonePad"), &data_dir())
+}
+
+/// old 搬成 new（new 还没有时）：整个文件夹改名；改不了名（旧后台还开着日志）就复制一份，旧的留着
+fn move_dir_once(old: &Path, new: &Path) -> Option<&'static str> {
+    if new.exists() || !old.is_dir() {
+        return None;
+    }
+    if std::fs::rename(old, new).is_ok() {
+        return Some("改名成");
+    }
+    // 主界面和后台同时启动时，可能另一个刚搬完
+    if new.exists() {
+        return None;
+    }
+    // 先复制到临时名字，复制完再改成正式的：复制到一半退出了，下次还会重新搬
+    let mut temp = new.as_os_str().to_owned();
+    temp.push(format!(".moving-{}", std::process::id()));
+    let temp = PathBuf::from(temp);
+    if copy_dir(old, &temp).is_ok() && std::fs::rename(&temp, new).is_ok() {
+        return Some("复制到");
+    }
+    let _ = std::fs::remove_dir_all(&temp);
+    None
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn config_path() -> PathBuf {
@@ -1055,5 +1102,28 @@ mod tests {
         assert_eq!(backspace["triggers"]["longPress"], false); // 开了连发，长按不发给手机
         assert_eq!(backspace["x"], 2.75);
         assert_eq!(payload["triggers"]["repeatIntervalMs"], 50);
+    }
+
+    /// 改名前的数据文件夹整个搬过来，只搬一次；复制的时候子文件夹也带上
+    #[test]
+    fn legacy_data_dir_moves_once() {
+        let root = std::env::temp_dir().join(format!("suanniao-movetest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (old, new) = (root.join("PhonePad"), root.join("SuanNIAO"));
+        std::fs::create_dir_all(old.join("logs")).unwrap();
+        std::fs::write(old.join("config.json"), "{}").unwrap();
+        std::fs::write(old.join("logs").join("core.log"), "log").unwrap();
+        assert_eq!(move_dir_once(&old, &new), Some("改名成"));
+        assert!(!old.exists());
+        assert_eq!(std::fs::read_to_string(new.join("logs").join("core.log")).unwrap(), "log");
+        // 新的已经有了：旧的再出现也不动
+        std::fs::create_dir_all(&old).unwrap();
+        assert_eq!(move_dir_once(&old, &new), None);
+        assert!(old.exists());
+        let copy = root.join("copy");
+        copy_dir(&new, &copy).unwrap();
+        assert_eq!(std::fs::read_to_string(copy.join("config.json")).unwrap(), "{}");
+        assert_eq!(std::fs::read_to_string(copy.join("logs").join("core.log")).unwrap(), "log");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

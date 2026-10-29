@@ -1,4 +1,4 @@
-package dev.phonepad
+package dev.suanniao
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -26,7 +26,7 @@ import kotlin.math.log10
 /**
  * 手机本地的流式语音识别：蒜鸟自己录音，用 sherpa-onnx 跑 X-ASR 中英模型，边说边出字、自带标点，不用联网。
  *
- * 模型放在 /sdcard/Android/data/dev.phonepad/files/models/<名字>/ 下，一个目录一个模型：
+ * 模型放在 /sdcard/Android/data/dev.suanniao/files/models/<名字>/ 下，一个目录一个模型：
  * tokens.txt 加 encoder / decoder / joiner 三个 .onnx。
  *
  * 一次按住（或锁定）从头到尾只用一个识别流、中途不重置：句子之间的「。」要等听到下一句开头才出，

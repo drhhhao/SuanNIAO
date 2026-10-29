@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use phonepad_config::{self as config, Config};
+use suanniao_config::{self as config, Config};
 
 const LIMIT: usize = 100;
 const MERGE_WINDOW: Duration = Duration::from_millis(1500);

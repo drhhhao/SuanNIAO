@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::SystemTime;
 
-use phonepad_config::{self as config, Config, Rect, Recent, Status};
+use suanniao_config::{self as config, Config, Rect, Recent, Status};
 
 use crate::{input, log, util};
 
@@ -275,7 +275,7 @@ mod tests {
     /// 用临时文件夹当 APPDATA（只有这个测试读写配置文件）
     #[test]
     fn broken_config_keeps_the_last_good_one() {
-        let dir = std::env::temp_dir().join(format!("phonepad-statetest-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("suanniao-statetest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("APPDATA", &dir);

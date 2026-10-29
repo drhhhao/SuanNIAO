@@ -1,4 +1,4 @@
-//! 日志、内存统计等小工具。日志写到 `%APPDATA%\PhonePad\logs\core.log`：超过 5 MB 就轮转，
+//! 日志、内存统计等小工具。日志写到 `%APPDATA%\SuanNIAO\logs\core.log`：超过 5 MB 就轮转，
 //! 旧的依次叫 core.1.log（最近的）… core.5.log，最多留 5 个（和 axonkey 一样 5 MB × 5）。
 
 use std::fs::{File, OpenOptions};
@@ -20,7 +20,7 @@ macro_rules! log {
 }
 
 fn log_dir() -> std::path::PathBuf {
-    phonepad_config::data_dir().join("logs")
+    suanniao_config::data_dir().join("logs")
 }
 
 /// 打开（必要时先轮转）日志文件
@@ -130,7 +130,7 @@ mod tests {
     /// 轮转：最新的旧日志是 core.1.log，最多留 5 个，再老的删掉
     #[test]
     fn rotation_keeps_five() {
-        let dir = std::env::temp_dir().join(format!("phonepad-logtest-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("suanniao-logtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for round in 0..7 {

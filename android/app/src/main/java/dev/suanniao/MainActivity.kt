@@ -1,4 +1,4 @@
-package dev.phonepad
+package dev.suanniao
 
 import android.Manifest
 import android.animation.ValueAnimator
@@ -39,9 +39,9 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import dev.phonepad.LinkService.Phase
-import dev.phonepad.Overlays.Btn
-import dev.phonepad.Overlays.Style
+import dev.suanniao.LinkService.Phase
+import dev.suanniao.Overlays.Btn
+import dev.suanniao.Overlays.Style
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -235,7 +235,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     /**
      * 调试版才有，测试时不用真出声、不用真点：
      * - debugWav：把手机上的一段 wav 当成对着语音按钮说话（加 debugLatch=true 顺便显示成锁定的样子）
-     *   adb shell am start -n dev.phonepad/.MainActivity -f 0x20000000 --es debugWav <wav 路径>
+     *   adb shell am start -n dev.suanniao/.MainActivity -f 0x20000000 --es debugWav <wav 路径>
      * - debugOnboarding、debugGuide、debugMenu：打开引导、手势说明、⋯ 菜单
      * - debugTutorial：从第 N 页打开使用教程（从 0 数，不算第一次打开）
      * - debugDimMs：闲置多久调暗屏幕（毫秒）

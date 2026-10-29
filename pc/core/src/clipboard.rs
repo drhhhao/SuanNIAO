@@ -413,7 +413,7 @@ mod tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| unsafe {
             let user_seq = sequence();
-            let name = HSTRING::from(format!("PhonePadClipboardTest{}", std::process::id()));
+            let name = HSTRING::from(format!("SuanNIAOClipboardTest{}", std::process::id()));
             let station = CreateWindowStationW(&name, 0, 0x37F, None).expect("建测试窗口站");
             SetProcessWindowStation(station).expect("换到测试窗口站");
             // 确认真的换过来了（新窗口站的剪贴板是空的、序号从头算），不然一个格式都不写
@@ -538,7 +538,7 @@ mod tests {
             (registered("HTML Format"), html),
             (registered("Rich Text Format"), b"{\\rtf1 hello}".to_vec()),
             (cf(CF_HDROP), hdrop()),
-            (registered("PhonePad Test Format"), custom),
+            (registered("SuanNIAO Test Format"), custom),
             (cf(CF_UNICODETEXT), utf16z("图片说明")),
         ];
         put(&original, true);
@@ -639,13 +639,13 @@ mod tests {
     }
 
     /// 手动验证用：真剪贴板、真按 Ctrl+V，粘贴到 PP_TEST_HWND 这个窗口（必须正在前台，不是就不粘贴）。
-    /// cargo test -p phonepad-core paste_into_foreground_window -- --ignored --exact
+    /// cargo test -p suanniao-core paste_into_foreground_window -- --ignored --exact
     #[test]
     #[ignore]
     fn paste_into_foreground_window() {
         use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
         let hwnd: isize = std::env::var("PP_TEST_HWND").expect("PP_TEST_HWND").parse().unwrap();
-        let text = std::env::var("PP_TEST_TEXT").unwrap_or_else(|_| "PhonePad 粘贴测试".into());
+        let text = std::env::var("PP_TEST_TEXT").unwrap_or_else(|_| "蒜鸟粘贴测试".into());
         let foreground = unsafe { GetForegroundWindow() };
         assert_eq!(foreground.0 as isize, hwnd, "前台不是测试窗口，不粘贴");
         crate::input::paste_text(&text);

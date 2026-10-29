@@ -286,8 +286,8 @@ mod tests {
         assert!(target <= WARMUP_WAIT + 1e-9 && lag <= WARMUP_WAIT + 1e-9, "target {target} lag {lag}");
     }
 
-    /// 拿 PHONEPAD_TRACE 记下的真实时序离线回放，调参数用。输出和 trace 一样的格式（cursor 换成回放的结果）：
-    /// PLAYOUT_REPLAY=trace.txt PLAYOUT_OUT=out.txt cargo test -p phonepad-core replay -- --ignored
+    /// 拿 SUANNIAO_TRACE 记下的真实时序离线回放，调参数用。输出和 trace 一样的格式（cursor 换成回放的结果）：
+    /// PLAYOUT_REPLAY=trace.txt PLAYOUT_OUT=out.txt cargo test -p suanniao-core replay -- --ignored
     /// 可选 PLAYOUT_Q、PLAYOUT_MAX_LAG、PLAYOUT_CATCH_UP、PLAYOUT_SPEED_UP、PLAYOUT_SLOW_DOWN 覆盖默认参数
     #[test]
     #[ignore]

@@ -1,11 +1,15 @@
 [package]
-name = "phonepad-core"
-version = "0.7.4"
+name = "suanniao-core"
+version = "0.7.5"
 edition = "2021"
 description = "蒜鸟电脑端后台：托盘常驻、蓝牙串口服务、执行按键映射"
 
+[[bin]]
+name = "SuanNIAO-core"
+path = "src/main.rs"
+
 [dependencies]
-phonepad-config = { path = "../config" }
+suanniao-config = { path = "../config" }
 serde_json = "1"
 
 [dependencies.windows]

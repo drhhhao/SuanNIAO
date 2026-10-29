@@ -1,11 +1,15 @@
 # 蒜鸟
 
-> 原名 PhonePad。界面、托盘、通知、手机桌面上显示的名字都改成了「蒜鸟」；exe 文件名、数据文件夹 `%APPDATA%\PhonePad`、项目文件夹、手机包名 `dev.phonepad`、互斥量和窗口类名这些内部名字没改（改了旧配置、手机上的设置和语音模型都要搬家，新旧版本也认不出对方）。
+> 英文名 SuanNIAO，原名 PhonePad。电脑端 0.7.5、手机端 0.9.4 起，exe、数据文件夹、手机包名这些内部名字也都改成了 SuanNIAO；PhonePad 只留在认旧版文件、换掉旧版的代码里。
 
 把小米 13 变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接；语音在手机上识别（本地模型，不用联网），只把文字发给电脑。方案见上一级目录的 `方案.md`。
 
-## 当前版本：电脑端 0.7.4 · 手机端 0.9.3
+## 当前版本：电脑端 0.7.5 · 手机端 0.9.4
 
+- 电脑端 0.7.5 / 手机端 0.9.4：内部名字改成 SuanNIAO。
+  - 电脑端：主界面 `SuanNIAO.exe`、后台 `SuanNIAO-core.exe`，数据文件夹 `%APPDATA%\SuanNIAO`；单实例的互斥量、托盘窗口类、开机自启（注册表 Run 里的 `SuanNIAO`）、排查用的环境变量（`SUANNIAO_TRACE`、`SUANNIAO_DRYRUN`）也换了名字。
+  - 从旧版更新：第一次打开新版主界面时，关掉还开着的旧主界面（PhonePad.exe），让旧后台（phonepad-core.exe）退出，把 `%APPDATA%\PhonePad` 整个改名成 `%APPDATA%\SuanNIAO`，开着的开机自启换成指向新后台。新后台先启动时（比如开机自启）也会搬数据文件夹。旧后台没退出、文件夹改不了名时复制一份，旧文件夹留着。
+  - 手机端：包名从 `dev.phonepad` 改成 `dev.suanniao`。系统把它当成另一个 App，不能覆盖旧版：要另外装、重新给权限、重新选电脑；旧 App 的语音模型在 `/sdcard/Android/data/dev.phonepad/files/models`，可以用 `adb shell cp -r` 复制到新包名的目录下（见「本地语音识别」）。
 - 电脑端 0.7.4：更新以后再打开蒜鸟，开着的旧版窗口会自己关掉、换成新版。以前只会把旧窗口调出来，要先手动关掉旧窗口才用得上新版。
   - 每个主界面在自己的窗口上挂着版本号，属性名和单实例的互斥量同名，测试副本换掉这个名字就碰不到正在用的窗口。
   - 0.7.3 以前的窗口没挂版本号，按标题「蒜鸟」、窗口类和程序所在的文件夹认。
@@ -13,13 +17,13 @@
 - 电脑端 0.7.3 / 手机端 0.9.3：加了使用教程，两边都是第一次打开时自动出来，从「欢迎使用蒜鸟」开始一页页讲，每页一幅会动的小画加几句大白话。
   - 手机上 9 页：在电脑上打开蒜鸟 → 蓝牙配对 → 选电脑（这三步就在教程里做）→ 触控板 → 按键 → 语音 → 「⋯」菜单 → 准备好了。之后在「⋯ → 使用教程」里能再看。
   - 电脑上 9 页：装好手机端、配对、选电脑（页面上实时显示后台、蓝牙、配对、连接的状态）→ 布局 → 映射 → 手机上怎么用 → 关掉窗口照样工作（顺带开机自启开关）→ 准备好了。之后点首页右上角的「使用教程」能再看。
-  - 电脑上是否看过存在 `%APPDATA%\PhonePad\ui.json` 的 `tutorialSeen`；看到开机自启那页就记下 `autostartAsked`，首页不再重复问。已经回答过开机自启、或者开着开机自启的老用户，不会自动弹出。
-  - 调试：电脑端 `PhonePad.exe --tutorial N`（从第 N 页打开，0 起）、`--first-run`；手机端 `am start -n dev.phonepad/.MainActivity --ei debugTutorial N`。
+  - 电脑上是否看过存在 `%APPDATA%\SuanNIAO\ui.json` 的 `tutorialSeen`；看到开机自启那页就记下 `autostartAsked`，首页不再重复问。已经回答过开机自启、或者开着开机自启的老用户，不会自动弹出。
+  - 调试：电脑端 `SuanNIAO.exe --tutorial N`（从第 N 页打开，0 起）、`--first-run`；手机端 `am start -n dev.suanniao/.MainActivity --ei debugTutorial N`。
 - 电脑端 0.7.2 / 手机端 0.9.2：触控板移动顺滑了，轻点一下再接着移动也一样。蓝牙送消息时快时慢（常常三四十毫秒一条都不来，接着几条一起涌进来），以前照收到的节奏走指针，一顿一跳；现在手机在每条移动里带上手指移动的时间，电脑按这个时间匀速回放（`pc/core/src/playout.rs`）。代价是跟手慢一点：延迟中位数比以前多约 25 毫秒，但不再忽快忽慢。点击、按下、松开和移动排同一个发送队列，按先后顺序到电脑，不会点在半路上。
 - 电脑端 0.7.0 / 手机端 0.9.0：改名叫「蒜鸟」。exe 里带了版本信息，任务管理器里显示「蒜鸟」「蒜鸟后台」；复制动作的开头改成 `suanniao/1`、导出备份的格式名改成 `suanniao-backup`，改名前的 `phonepad/1`、`phonepad-backup`、`phonepad-config` 照样认。
 - 手机端 0.8.1：「说完一句再发」（不边说边打字）时，停顿判定按模型出字的间隔加长（960ms 模型 1.44 秒，480ms 还是 0.8 秒），不再把没说完的话一段段发出去。
 
-- **电脑端**：主界面 `PhonePad.exe`（窗口标题、任务管理器里叫「蒜鸟」）加后台 `phonepad-core.exe`（任务管理器里叫「蒜鸟后台」）。
+- **电脑端**：主界面 `SuanNIAO.exe`（窗口标题、任务管理器里叫「蒜鸟」）加后台 `SuanNIAO-core.exe`（任务管理器里叫「蒜鸟后台」）。
   - 后台在托盘常驻：左键托盘图标打开主界面，右键菜单可以「暂停按键 / 恢复按键」、退出。托盘提示写「蒜鸟 · 已连接 · 手机名」或「蒜鸟 · 未连接」。
   - 主界面有六页：首页、布局、映射、总览、设置、关于。改动会自动保存，手机马上更新。
   - 顶栏：连接状态（手机名太长时省略，点一下弹出手机信息：名字、型号、App 版本、电量、连上多久）、「按键映射」总开关（关掉后手机上的按键不执行、变淡，触控板和语音照常；手机上也能暂停 / 恢复）、撤销 / 重做。
@@ -97,17 +101,19 @@
 - **装模型**：模型不打进安装包，用 adb 推到 App 的专属目录（重装 App 不会丢，卸载会丢）。电脑上的模型在 `models\` 下，目录名就是菜单里显示的名字：
 
 ```
-adb push models\x-asr-480ms /sdcard/Android/data/dev.phonepad/files/models/
-adb push models\x-asr-960ms /sdcard/Android/data/dev.phonepad/files/models/
-adb shell chmod -R 777 /sdcard/Android/data/dev.phonepad/files/models
+adb push models\x-asr-480ms /sdcard/Android/data/dev.suanniao/files/models/
+adb push models\x-asr-960ms /sdcard/Android/data/dev.suanniao/files/models/
+adb shell chmod -R 777 /sdcard/Android/data/dev.suanniao/files/models
 ```
 
   在 Git Bash 里执行要先 `export MSYS_NO_PATHCONV=1`，不然手机上的路径会被改写。adb 建的目录默认 App 进不去，所以要 chmod。
 
+  手机上装过改名前的 App（`dev.phonepad`）的，模型不用再推：先打开一次新 App（建好它的目录），再 `adb shell cp -r /sdcard/Android/data/dev.phonepad/files/models /sdcard/Android/data/dev.suanniao/files/`，照上面 chmod。
+
 - **测试**（不用出声）：`tools\` 下有电脑端的流式模拟和一个接字的测试窗口，`models\test\` 下是两段 Windows 语音合成的测试音频。
   - `python -X utf8 tools\asr_stream_test.py models\x-asr-480ms models\test\vibe.wav 0`：在电脑上模拟，最后一个参数 0 表示单流不断句。
-  - 手机上把 wav 当成对着语音按钮说话（只在调试版里有）：先把 wav 推到 `/sdcard/Android/data/dev.phonepad/files/test/`，再
-    `adb shell am start -n dev.phonepad/.MainActivity -f 0x20000000 --es debugWav /sdcard/Android/data/dev.phonepad/files/test/vibe.wav`（加 `--ez debugLatch true` 按锁定的方式说）
+  - 手机上把 wav 当成对着语音按钮说话（只在调试版里有）：先把 wav 推到 `/sdcard/Android/data/dev.suanniao/files/test/`，再
+    `adb shell am start -n dev.suanniao/.MainActivity -f 0x20000000 --es debugWav /sdcard/Android/data/dev.suanniao/files/test/vibe.wav`（加 `--ez debugLatch true` 按锁定的方式说）
   - 调试版的其他测试入口（同样用 `am start` 传）：`--ez debugOnboarding true`（第一次打开时的教程）、`--ei debugTutorial 页码`（从第几页打开教程，0 起）、`--ez debugGuide true`、`--ez debugMenu true`、`--ez debugPending true`、`--el debugDimMs 毫秒`、`--es debugConfigFile 文件`。
   - 往电脑上打字的测试之前，先用 `tools\type_target.ps1` 开测试窗口，并用 `tools\foreground.ps1` 确认它在前台，别打进别的窗口。
 
@@ -126,7 +132,7 @@ adb shell chmod -R 777 /sdcard/Android/data/dev.phonepad/files/models
 | `tools` | 语音识别的测试脚本、接字的测试窗口 |
 | `archive/` | 旧草稿和每次大改前的源码备份；不进 GitHub 仓库 |
 
-配置文件和日志都在 `%APPDATA%\PhonePad\`：
+配置文件和日志都在 `%APPDATA%\SuanNIAO\`：
 
 | 文件 | 内容 |
 |---|---|
@@ -148,7 +154,7 @@ cargo build --release
 
 开发时可以用 `cargo build --profile fastrel`（不做 LTO，增量编译，生成在 `pc\target\fastrel\`）。单元测试：`cargo test`（后台的剪贴板测试在自己建的窗口站里跑，不会动到正在用的剪贴板）。
 
-查触控板卡不卡：启动后台前设环境变量 `PHONEPAD_TRACE=文件路径`，后台把收到的每条消息和指针走的每一步连同时间记下来；再设 `PHONEPAD_DRYRUN=1` 就只记录、不真的动鼠标键盘（自动化测试用，免得点到正在用的窗口）。记下的文件可以拿 `playout.rs` 里的 `replay` 测试离线回放、换参数比较，用法写在那个测试上面。
+查触控板卡不卡：启动后台前设环境变量 `SUANNIAO_TRACE=文件路径`，后台把收到的每条消息和指针走的每一步连同时间记下来；再设 `SUANNIAO_DRYRUN=1` 就只记录、不真的动鼠标键盘（自动化测试用，免得点到正在用的窗口）。记下的文件可以拿 `playout.rs` 里的 `replay` 测试离线回放、换参数比较，用法写在那个测试上面。
 
 手机端需要 JDK 17 和 Android SDK：
 
@@ -220,3 +226,4 @@ status.json 里和手机有关的：`device`、`phoneModel`、`phoneApp`、`conf
 | 单元测试（0.6.0） | 配置 27 个、主界面 2 个、后台 9 个全过（后台的包括剪贴板 7 个、配置读坏 1 个；真剪贴板的那个要手动跑，见 `clipboard.rs`） |
 | 触控板顺滑（0.7.2） | 在手机触控板上注入手势（直线滑动、轻点后 0.5 秒 / 0.15 秒接着滑、快速左右来回划），后台只记录不动鼠标。同一段真实蓝牙时序：以前 13 段滑动段段都有停顿，按 120 Hz 算停顿帧 51/404，每帧走的距离忽大忽小（变异系数 0.52）；现在 13 段里 10 段一帧不停，停顿帧 5/372，变异系数 0.16。剩下的停顿是蓝牙偶尔七八十到一百五十毫秒什么都不送，指针停一下再接着走，不跳。延迟（指针比蓝牙最快送到时多等的时间）：以前中位 29 毫秒、慢的一成超过 121 毫秒，现在中位 53 毫秒、慢的一成超过 62 毫秒。发布版实测：12 段直线滑动 10 段一帧不停，延迟中位 58 毫秒。后台单元测试 14 个全过（新加回放 5 个） |
 | 新版换掉旧窗口（0.7.4） | 隔离副本：开着没挂版本号的 0.7.3 或挂了 0.7.3 的窗口时打开 0.7.4，旧窗口 0.05 秒内关掉，新版接上；开着 0.7.4 时再开 0.7.3 或 0.7.4，后开的自己退出，原窗口不动；前台一直没变。真机：用户开着的 0.7.3 窗口 0.07 秒后关掉，后台跟着换成 0.7.4，手机 1 秒后连回 |
+| 内部改名 SuanNIAO（0.7.5） | 真机从旧版换过来：打开新的 SuanNIAO.exe，开着的 PhonePad.exe 窗口和 phonepad-core.exe 0.15 秒内都退出，新后台 0.24 秒后启动；`%APPDATA%\PhonePad` 整个改名成 `%APPDATA%\SuanNIAO`，配置、日志、备份都在；开机自启从 Run 里的 `PhonePad` 换成指向新后台的 `SuanNIAO`；手机（旧 App 0.9.3）1.2 秒后连回，配置回执 1/1。单元测试配置 29 个、后台 14 个、主界面 2 个全过 |

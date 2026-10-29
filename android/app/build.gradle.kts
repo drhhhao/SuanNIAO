@@ -4,16 +4,17 @@ plugins {
 }
 
 android {
-    // 包名是改名（蒜鸟）前起的：改了就成了另一个 App，手机上的设置、语音模型都得重来，所以不改
-    namespace = "dev.phonepad"
+    // 包名定了就别再改：改了就成了另一个 App，装着旧包的手机升级不上来，设置、语音模型都得重来。
+    // 改名前叫 dev.phonepad（0.9.3 以前）
+    namespace = "dev.suanniao"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.phonepad"
+        applicationId = "dev.suanniao"
         minSdk = 28
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.9.3"
+        versionCode = 19
+        versionName = "0.9.4"
         // 只给 64 位 ARM 手机用，本地语音识别的原生库只打这一种，安装包小很多
         ndk { abiFilters += "arm64-v8a" }
     }

@@ -3015,37 +3015,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phonepad-config"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "phonepad-core"
-version = "0.7.4"
-dependencies = [
- "embed-resource",
- "phonepad-config",
- "serde_json",
- "windows",
-]
-
-[[package]]
-name = "phonepad-ui"
-version = "0.7.4"
-dependencies = [
- "embed-resource",
- "phonepad-config",
- "raw-window-handle",
- "serde_json",
- "slint",
- "slint-build",
- "windows",
-]
-
-[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3930,6 +3899,37 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "suanniao-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "suanniao-core"
+version = "0.7.5"
+dependencies = [
+ "embed-resource",
+ "serde_json",
+ "suanniao-config",
+ "windows",
+]
+
+[[package]]
+name = "suanniao-ui"
+version = "0.7.5"
+dependencies = [
+ "embed-resource",
+ "raw-window-handle",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "suanniao-config",
+ "windows",
 ]
 
 [[package]]

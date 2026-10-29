@@ -27,13 +27,13 @@ static TOOLTIP: Mutex<String> = Mutex::new(String::new());
 pub fn run() {
     unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
-        let class = w!("PhonePadTrayWindow");
+        let class = w!("SuanNIAOTrayWindow");
         let wc = WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance.into(), lpszClassName: class, ..Default::default() };
         RegisterClassW(&wc);
         let Ok(hwnd) = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class,
-            w!("PhonePadTray"),
+            w!("SuanNIAOTray"),
             WINDOW_STYLE::default(),
             0,
             0,
@@ -114,10 +114,10 @@ pub fn post(msg: u32) {
     }
 }
 
-/// 打开主界面（和后台放在同一个文件夹的 PhonePad.exe）。
+/// 打开主界面（和后台放在同一个文件夹的 SuanNIAO.exe）。
 pub fn open_ui() {
     let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else { return };
-    let exe = dir.join("PhonePad.exe");
+    let exe = dir.join("SuanNIAO.exe");
     if let Err(e) = std::process::Command::new(&exe).spawn() {
         log!("⚠ 打不开主界面 {}：{e}", exe.display());
     }

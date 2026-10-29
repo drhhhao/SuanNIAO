@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use phonepad_config::{self as config, HoldMode, Rect, Trigger};
+use suanniao_config::{self as config, HoldMode, Rect, Trigger};
 use serde_json::{json, Value};
 use windows::core::{Result, GUID, HSTRING};
 use windows::Devices::Bluetooth::Rfcomm::{RfcommServiceId, RfcommServiceProvider};
@@ -29,7 +29,7 @@ use crate::{actions, input, log, state, tray};
 
 /// 手机按这个服务 ID 找到电脑上的服务。
 pub const SERVICE_UUID: GUID = GUID::from_u128(0x5f6a1c2e_8b3d_4e7f_9a10_2b3c4d5e6f70);
-const SERVICE_NAME: &str = "PhonePad";
+const SERVICE_NAME: &str = "SuanNIAO";
 
 /// 只保留一部手机：新连接会顶掉旧连接。
 static ACTIVE: Mutex<Option<StreamSocket>> = Mutex::new(None);

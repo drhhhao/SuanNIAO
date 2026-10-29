@@ -1,5 +1,5 @@
 [package]
-name = "phonepad-config"
+name = "suanniao-config"
 version = "0.1.0"
 edition = "2021"
 description = "蒜鸟电脑端后台和主界面共用的配置：手机布局、按键映射、设置"

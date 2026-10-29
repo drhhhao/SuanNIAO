@@ -1,4 +1,4 @@
-//! 蒜鸟主界面（PhonePad.exe）：编辑手机布局、按键映射和设置。
+//! 蒜鸟主界面（SuanNIAO.exe）：编辑手机布局、按键映射和设置。
 //!
 //! 改动 300 毫秒后自动保存到 config.json，后台发现文件变了就同步给手机。
 //! 配置文件也可能被别处改（在手机上调布局时由后台写回）：每半秒看一次，被改了就重新载入；
@@ -19,11 +19,11 @@ use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
-use phonepad_config::actions::{app_path_problem, key_list, normalize_url, split_shortcut, MAX_CURSOR_DISTANCE, MAX_DELAY_MS};
-use phonepad_config::axonkey::{self, Import};
-use phonepad_config::geometry::{self, show};
-use phonepad_config::profiles::IMPORTED_PROFILE_NAME;
-use phonepad_config::{
+use suanniao_config::actions::{app_path_problem, key_list, normalize_url, split_shortcut, MAX_CURSOR_DISTANCE, MAX_DELAY_MS};
+use suanniao_config::axonkey::{self, Import};
+use suanniao_config::geometry::{self, show};
+use suanniao_config::profiles::IMPORTED_PROFILE_NAME;
+use suanniao_config::{
     self as config, any_active, Action, Config, ConfigError, HoldMode, Module, ModuleKind, Page, PasteMode, Rect, Settings, Step,
     Trigger, ACTION_KINDS, DIRECTIONS, KEY_GROUPS, MEDIA_KEYS, MIN_SIZE, MOUSE_BUTTONS, PASTE_MODES, PROFILE_DIRECTIONS,
 };
@@ -161,6 +161,10 @@ fn main() -> Result<(), slint::PlatformError> {
     if win::activate_existing_window() {
         return Ok(());
     }
+    // 改名前（0.7.4 以前内部叫 PhonePad）的后台先退出，再把它的数据文件夹、开机自启换成新的
+    win::stop_legacy_core();
+    config::move_legacy_data_dir();
+    win::move_legacy_autostart();
     config::set_local_offset_secs(win::local_offset_secs());
     replace_outdated_core();
     win::ensure_core_running();
@@ -180,11 +184,11 @@ fn main() -> Result<(), slint::PlatformError> {
     lists.on_filter_keys(|query| ModelRc::new(VecModel::from(filter_keys(&query))));
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     ui.set_folder(config::data_dir().display().to_string().into());
-    // `PhonePad.exe --dark` 强制深色，方便截图检查深色下的样子
+    // `SuanNIAO.exe --dark` 强制深色，方便截图检查深色下的样子
     if std::env::args().any(|a| a == "--dark") {
         ui.set_force_dark(true);
     }
-    // `PhonePad.exe --page 2` 直接打开第几页（0 首页 … 5 关于），方便截图检查
+    // `SuanNIAO.exe --page 2` 直接打开第几页（0 首页 … 5 关于），方便截图检查
     let mut args = std::env::args().skip_while(|a| a != "--page").skip(1);
     if let Some(page) = args.next().and_then(|p| p.parse::<i32>().ok()) {
         ui.set_nav(page.clamp(0, 5));
@@ -245,7 +249,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ctx.refresh_all();
     wire(&ui, &ctx);
     // 第一次用：自动打开使用教程（问过开机自启、开了开机自启的是以前就在用的，不算第一次）。
-    // `PhonePad.exe --tutorial 3` 打开教程的第几页（像从首页点开的），`--first-run` 是第一次打开时的样子，方便截图检查
+    // `SuanNIAO.exe --tutorial 3` 打开教程的第几页（像从首页点开的），`--first-run` 是第一次打开时的样子，方便截图检查
     let mut args = std::env::args().skip_while(|a| a != "--tutorial").skip(1);
     if let Some(page) = args.next().and_then(|p| p.parse::<i32>().ok()) {
         ui.set_tutorial_start(page.clamp(0, 8));
@@ -1441,7 +1445,7 @@ impl Ctx {
 
     fn start_core(self: &Rc<Self>) {
         if !win::start_core() {
-            self.toast("启动后台失败：phonepad-core.exe 应该和 PhonePad.exe 在同一个文件夹");
+            self.toast("启动后台失败：SuanNIAO-core.exe 应该和 SuanNIAO.exe 在同一个文件夹");
         }
     }
 

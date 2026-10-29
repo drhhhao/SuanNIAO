@@ -1,6 +1,6 @@
-//! 蒜鸟电脑端后台（phonepad-core.exe）：托盘常驻，开蓝牙串口服务等手机连接，执行按键映射和触控板、语音文字。
+//! 蒜鸟电脑端后台（SuanNIAO-core.exe）：托盘常驻，开蓝牙串口服务等手机连接，执行按键映射和触控板、语音文字。
 //!
-//! 配置由主界面（PhonePad.exe）编辑、写到 `%APPDATA%\PhonePad\config.json`；这里每半秒看一次文件有没有变，
+//! 配置由主界面（SuanNIAO.exe）编辑、写到 `%APPDATA%\SuanNIAO\config.json`；这里每半秒看一次文件有没有变，
 //! 变了就重新读取并同步给手机。手机上调好的布局由这里校验后写回这个文件。
 //! 运行状态写到 status.json，给主界面首页显示。
 
@@ -20,7 +20,7 @@ mod util;
 
 use std::time::{Duration, SystemTime};
 
-use phonepad_config as config;
+use suanniao_config as config;
 use windows::core::w;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::CreateMutexW;
@@ -28,11 +28,17 @@ use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
 fn main() {
     // 只允许一个后台在跑
-    let _single = unsafe { CreateMutexW(None, true, w!("Local\\PhonePad.Core")) };
+    // 改名前（0.7.4 以前）占的是 Local\PhonePad.Core，主界面要换掉旧后台时两个名字都看
+    let _single = unsafe { CreateMutexW(None, true, w!("Local\\SuanNIAO.Core")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return;
     }
+    // 没开过新版主界面就先开了后台（比如开机自启）时，在这里搬改名前的数据文件夹
+    let moved = config::move_legacy_data_dir();
     util::init_log();
+    if let Some(how) = moved {
+        log!("📦 改名前的数据文件夹 %APPDATA%\\PhonePad {how} %APPDATA%\\SuanNIAO");
+    }
     config::set_local_offset_secs(util::local_offset_secs());
     input::enable_dpi_awareness();
     unsafe {

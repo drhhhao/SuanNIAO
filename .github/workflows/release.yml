@@ -67,7 +67,7 @@ jobs:
         run: |
           $dir = "SuanNIAO-PC-$env:VER"
           New-Item -ItemType Directory $dir | Out-Null
-          Copy-Item pc/target/release/PhonePad.exe, pc/target/release/phonepad-core.exe $dir
+          Copy-Item pc/target/release/SuanNIAO.exe, pc/target/release/SuanNIAO-core.exe $dir
           # 说明文件换成 CRLF + BOM，老记事本打开也不乱码
           $readme = (Get-Content -Raw -Encoding utf8 pc/dist/README.txt).Replace('{version}', $env:VER) -replace "`r?`n", "`r`n"
           Set-Content -NoNewline -Encoding utf8BOM "$dir/README.txt" $readme
@@ -139,7 +139,7 @@ jobs:
         run: |
           prev=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
           {
-            echo "**电脑**：下载 \`SuanNIAO-PC-$PC.zip\`，解压到一个固定的文件夹，双击 \`PhonePad.exe\`。"
+            echo "**电脑**：下载 \`SuanNIAO-PC-$PC.zip\`，解压到一个固定的文件夹，双击 \`SuanNIAO.exe\`。"
             echo
             echo "**手机**：下载 \`SuanNIAO-Android-$PHONE.apk\` 安装（只支持 64 位的安卓手机）。"
             if [ -n "$prev" ]; then

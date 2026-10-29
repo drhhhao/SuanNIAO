@@ -1,4 +1,10 @@
-# 蒜鸟（PhonePad）项目规则
+# 蒜鸟（SuanNIAO）项目规则
+
+## 名字
+
+- 项目叫 SuanNIAO（蒜鸟），用户不要再看到 PhonePad：电脑端 `SuanNIAO.exe` + `SuanNIAO-core.exe`，数据文件夹 `%APPDATA%\SuanNIAO`，手机包名 `dev.suanniao`，发版文件 `SuanNIAO-PC-版本.zip`、`SuanNIAO-Android-版本.apk`。
+- 新加的名字（文件、互斥量、窗口类、环境变量、临时文件）都用 SuanNIAO / suanniao。PhonePad、phonepad 只留在认改名前文件和换掉旧版的代码里（`LEGACY_*`、`move_legacy_*`、`phonepad/1`、`phonepad-backup`）。
+- 手机包名定了就不能再改：改了系统当成另一个 App，别人手机上的旧版升级不上来。
 
 ## 版本号
 

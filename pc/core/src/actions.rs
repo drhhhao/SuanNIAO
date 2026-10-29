@@ -11,7 +11,7 @@
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use phonepad_config::{Action, PasteMode, Step};
+use suanniao_config::{Action, PasteMode, Step};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
 use crate::{input, launcher, link, log, overlay, state};
@@ -165,7 +165,7 @@ fn execute(action: &Action, options: &RunOptions) {
             input::scroll(dx, dy);
         }
         Action::CursorMove { direction, distance } => {
-            let d = (*distance).clamp(1, phonepad_config::actions::MAX_CURSOR_DISTANCE) as f64 * options.cursor_scale;
+            let d = (*distance).clamp(1, suanniao_config::actions::MAX_CURSOR_DISTANCE) as f64 * options.cursor_scale;
             let (dx, dy) = match direction.as_str() {
                 "up" => (0.0, -d),
                 "down" => (0.0, d),

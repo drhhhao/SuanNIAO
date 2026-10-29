@@ -81,7 +81,7 @@ pub fn on_show() {
 fn create_window() -> Option<HWND> {
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
-        let class = w!("PhonePadProfileOverlay");
+        let class = w!("SuanNIAOProfileOverlay");
         let wc = WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance.into(), lpszClassName: class, ..Default::default() };
         RegisterClassW(&wc);
         CreateWindowExW(

@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use phonepad_config::actions::{app_path_problem, normalize_url};
+use suanniao_config::actions::{app_path_problem, normalize_url};
 use windows::core::{w, Interface, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Com::{

@@ -1,4 +1,4 @@
-package dev.phonepad
+package dev.suanniao
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -648,15 +648,15 @@ class LinkService : Service() {
 
     companion object {
         // 日志标签、偏好文件名是改名前起的，不改（改了偏好文件名，选过的电脑、菜单里的设置都会丢）
-        const val TAG = "PhonePad"
-        const val PREFS = "phonepad"
+        const val TAG = "SuanNIAO"
+        const val PREFS = "suanniao"
         const val KEY_ADDRESS = "pc_address"
         /** 电脑推来的最新配置（服务和界面共用） */
         const val KEY_CONFIG = "layout_config"
         const val EXTRA_ADDRESS = "address"
-        const val ACTION_PAUSE = "dev.phonepad.PAUSE"
-        const val ACTION_RESUME = "dev.phonepad.RESUME"
-        const val ACTION_DISCONNECT = "dev.phonepad.DISCONNECT"
+        const val ACTION_PAUSE = "dev.suanniao.PAUSE"
+        const val ACTION_RESUME = "dev.suanniao.RESUME"
+        const val ACTION_DISCONNECT = "dev.suanniao.DISCONNECT"
         private const val CHANNEL = "link"
         private const val NOTIFY_ID = 1
         /** 请求暂停 / 恢复后最多等这么久电脑推来新配置 */

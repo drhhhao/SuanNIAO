@@ -58,7 +58,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 /// 主界面占着的名字（互斥量），也是挂在主窗口上的属性名，属性的值是主界面的版本号（见 version_mark）。
 /// 测试用的副本把这个名字整个换掉，就既不占正在用的名字，也认不到正在用的窗口
-const UI_LOCK: PCWSTR = w!("Local\\PhonePad.UI");
+const UI_LOCK: PCWSTR = w!("Local\\SuanNIAO.UI");
+/// 后台占着的名字（互斥量）和它托盘窗口的类名
+const CORE_LOCK: PCWSTR = w!("Local\\SuanNIAO.Core");
+const CORE_TRAY: PCWSTR = w!("SuanNIAOTrayWindow");
+/// 开机自启在 Run 里的名字
+const RUN_VALUE: PCWSTR = w!("SuanNIAO");
+/// 改名前（0.7.4 以前内部叫 PhonePad）的这些名字：新版启动时认出旧的主界面、后台和开机自启，换成新的
+const LEGACY_UI_LOCK: PCWSTR = w!("Local\\PhonePad.UI");
+const LEGACY_CORE_LOCK: PCWSTR = w!("Local\\PhonePad.Core");
+const LEGACY_CORE_TRAY: PCWSTR = w!("PhonePadTrayWindow");
+const LEGACY_RUN_VALUE: PCWSTR = w!("PhonePad");
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
@@ -67,7 +77,7 @@ pub fn exe_dir() -> PathBuf {
 }
 
 fn core_exe() -> PathBuf {
-    exe_dir().join("phonepad-core.exe")
+    exe_dir().join("SuanNIAO-core.exe")
 }
 
 /// 已经开着一个主界面时，把它提到前台并返回 true（这个进程直接退出）。
@@ -77,9 +87,10 @@ pub fn activate_existing_window() -> bool {
         // 句柄故意不关：进程活着时一直占着这个名字（换掉旧窗口以后也是）
         let _ = CreateMutexW(None, true, UI_LOCK);
         if GetLastError() != ERROR_ALREADY_EXISTS {
+            close_legacy_ui();
             return false;
         }
-        let running = running_ui();
+        let running = running_ui(UI_LOCK);
         if let Some((hwnd, version)) = running {
             if version < version_mark() && close_and_wait(hwnd) {
                 return false;
@@ -101,25 +112,39 @@ fn version_mark() -> usize {
     (major as usize * 1000 + minor as usize) * 1000 + patch as usize
 }
 
-/// 开着的主界面窗口和它挂的版本号。
+/// 改名前的主界面（PhonePad.exe）还开着：一定比这个版本旧，让它关掉
+fn close_legacy_ui() {
+    if mutex_exists(LEGACY_UI_LOCK) {
+        if let Some((hwnd, _)) = running_ui(LEGACY_UI_LOCK) {
+            close_and_wait(hwnd);
+        }
+    }
+}
+
+/// 开着的主界面窗口和它挂的版本号（属性名是 lock）。
 /// 0.7.3 以前的没挂版本号（当作 0）：认标题「蒜鸟」和 winit 的窗口类，还要是这个文件夹里的程序开的（不碰别处的副本）
-fn running_ui() -> Option<(HWND, usize)> {
+fn running_ui(lock: PCWSTR) -> Option<(HWND, usize)> {
+    struct Search {
+        lock: PCWSTR,
+        found: Option<(HWND, usize)>,
+    }
     unsafe extern "system" fn marked(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
         unsafe {
-            let version = GetPropW(hwnd, UI_LOCK).0 as usize;
+            let search = &mut *(lparam.0 as *mut Search);
+            let version = GetPropW(hwnd, search.lock).0 as usize;
             if version == 0 {
                 return true.into();
             }
-            *(lparam.0 as *mut Option<(HWND, usize)>) = Some((hwnd, version));
+            search.found = Some((hwnd, version));
             false.into()
         }
     }
-    let mut found = None;
+    let mut search = Search { lock, found: None };
     unsafe {
-        let _ = EnumWindows(Some(marked), LPARAM(&mut found as *mut Option<(HWND, usize)> as isize));
+        let _ = EnumWindows(Some(marked), LPARAM(&mut search as *mut Search as isize));
     }
-    if found.is_some() {
-        return found;
+    if search.found.is_some() {
+        return search.found;
     }
     let here = exe_dir();
     let mut after = None;
@@ -503,8 +528,12 @@ pub fn window_command(command: WindowCommand) {
 
 /// 后台在跑没有（后台启动时会占一个固定名字的互斥量）。
 pub fn core_running() -> bool {
+    mutex_exists(CORE_LOCK)
+}
+
+fn mutex_exists(name: PCWSTR) -> bool {
     unsafe {
-        match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, w!("Local\\PhonePad.Core")) {
+        match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, name) {
             Ok(handle) => {
                 let _ = CloseHandle(handle);
                 true
@@ -527,15 +556,27 @@ pub fn ensure_core_running() {
 /// 让正在跑的后台退出：给它的托盘窗口发「退出」菜单命令（和托盘右键点「退出」一样，会先松开按着的键），
 /// 最多等 3 秒。退出了返回 true
 pub fn stop_core() -> bool {
+    stop_core_named(CORE_LOCK, CORE_TRAY)
+}
+
+/// 改名前的后台（phonepad-core.exe）还在跑：一定比这个版本旧，让它退出。
+/// 要在搬数据文件夹之前：它开着日志文件，文件夹改不了名
+pub fn stop_legacy_core() {
+    if mutex_exists(LEGACY_CORE_LOCK) {
+        stop_core_named(LEGACY_CORE_LOCK, LEGACY_CORE_TRAY);
+    }
+}
+
+fn stop_core_named(lock: PCWSTR, tray: PCWSTR) -> bool {
     // 托盘菜单里「退出」的命令号，各版本的后台都一样
     const MENU_EXIT: usize = 2;
     unsafe {
-        if let Ok(hwnd) = FindWindowW(w!("PhonePadTrayWindow"), PCWSTR::null()) {
+        if let Ok(hwnd) = FindWindowW(tray, PCWSTR::null()) {
             let _ = PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(MENU_EXIT), LPARAM(0));
         }
     }
     for _ in 0..30 {
-        if !core_running() {
+        if !mutex_exists(lock) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -626,7 +667,7 @@ pub fn local_offset_secs() -> i64 {
 /// UNIX 秒 → 本地时间「2026-10-29 07:45」（按现在的时区换算）
 pub fn local_time_text(secs: u64) -> String {
     let shifted = (secs as i64 + local_offset_secs()).max(0) as u64;
-    let iso = phonepad_config::transfer::iso_utc(shifted);
+    let iso = suanniao_config::transfer::iso_utc(shifted);
     iso.replace('T', " ").trim_end_matches('Z').chars().take(16).collect()
 }
 
@@ -728,7 +769,11 @@ fn open_dialog(owner: HWND, filter: &str, keep_links: bool) -> Option<String> {
 }
 
 pub fn autostart_enabled() -> bool {
-    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, w!("PhonePad"), RRF_RT_REG_SZ, None, None, None) == ERROR_SUCCESS }
+    run_value_exists(RUN_VALUE)
+}
+
+fn run_value_exists(name: PCWSTR) -> bool {
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, name, RRF_RT_REG_SZ, None, None, None) == ERROR_SUCCESS }
 }
 
 /// 开机自启：在当前用户的 Run 里写上后台程序的路径。
@@ -740,14 +785,23 @@ pub fn set_autostart(on: bool) -> bool {
             RegSetKeyValueW(
                 HKEY_CURRENT_USER,
                 RUN_KEY,
-                w!("PhonePad"),
+                RUN_VALUE,
                 REG_SZ.0,
                 Some(wide.as_ptr().cast()),
                 (wide.len() * 2) as u32,
             ) == ERROR_SUCCESS
         } else {
-            let result = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, w!("PhonePad"));
+            let result = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE);
             result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND
+        }
+    }
+}
+
+/// 改名前开了开机自启（Run 里的 PhonePad，指着 phonepad-core.exe）：换成新的，指着这个文件夹里的后台
+pub fn move_legacy_autostart() {
+    if run_value_exists(LEGACY_RUN_VALUE) && set_autostart(true) {
+        unsafe {
+            let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, LEGACY_RUN_VALUE);
         }
     }
 }
