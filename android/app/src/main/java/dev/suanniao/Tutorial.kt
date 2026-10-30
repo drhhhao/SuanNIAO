@@ -2887,7 +2887,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             line.strokeWidth = 1f
             rr(46f, 10f, 254f, 230f, 18f, line)
             text("选择电脑", 62f, 37f, 12f, 900, Ui.alpha(palette.fg, intro))
-            text("列的是和这部手机配对过的电脑", 62f, 53f, 6.4f, 650, Ui.alpha(palette.sub, intro))
+            text("配对过的电脑", 62f, 53f, 6.4f, 650, Ui.alpha(palette.sub, intro))
             val mine = shortName ?: fit(name ?: "我的笔记本", 8.5f, 750, 130f).also { shortName = it }
             val chosen = seg(1150f, 1250f, tt) * back
             for (i in 0 until 3) {

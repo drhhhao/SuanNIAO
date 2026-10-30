@@ -1343,9 +1343,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         val openPending: (() -> Unit)? = if (pending.isNotEmpty()) ({ showPendingSheet() }) else null
         return when {
             !connected && savedAddress() == null && LanBinding.load(this)?.revoked == true ->
-                BannerSpec("lanoff", "电脑上解除了绑定", "重新扫电脑上的二维码就能再用局域网连", "扫码") { scanComputer() }
-            !hasBluetoothPermission() && !lanBound() -> BannerSpec("perm", "需要「附近的设备」权限", "用蓝牙连电脑要用到它，只连你选的那台", "允许") { askBluetoothPermission() }
-            savedAddress() == null && !lanBound() -> BannerSpec("nodev", "还没选电脑", "蓝牙选电脑，或者扫电脑上的二维码", "选择电脑") { pickComputer() }
+                BannerSpec("lanoff", "电脑上解除了绑定", "重新扫码就能再连", "扫码") { scanComputer() }
+            !hasBluetoothPermission() && !lanBound() -> BannerSpec("perm", "需要「附近的设备」权限", "蓝牙连电脑要用，只连你选的那台", "允许") { askBluetoothPermission() }
+            savedAddress() == null && !lanBound() -> BannerSpec("nodev", "还没选电脑", "选一台，或扫电脑上的二维码", "选择电脑") { pickComputer() }
             connected && mappingPaused -> BannerSpec("paused", "按键已暂停", "触控板和语音照常", "恢复", paused = true) { requestEnabled(true) }
             connected -> null
             status.phase == Phase.OFF && link?.stoppedByUser == true ->
@@ -1358,7 +1358,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             }
             else -> BannerSpec(
                 "offline", "未连接电脑",
-                pendingLine ?: if (status.phase == Phase.CONNECTING) "正在连接…" else "在电脑上打开蒜鸟，会自动连上",
+                pendingLine ?: if (status.phase == Phase.CONNECTING) "正在连接…" else "电脑上开着蒜鸟就会连上",
                 "重试", busy = status.phase == Phase.CONNECTING, onBody = openPending,
             ) { retryLink() }
         }
@@ -1535,7 +1535,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             }
             header(
                 "刚才说的 ${count(text)} 字没发出去",
-                if (connected) "发送后会打在电脑当前的窗口里" else "连上电脑后才能发送；也可以先复制",
+                if (connected) "打在电脑当前的窗口里" else "连上后才能发送，可以先复制",
             )
             view(overlays.text(text, 15f, 650, palette.fg).apply {
                 setLineSpacing(dp(3).toFloat(), 1f)
@@ -1603,7 +1603,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         header("蒜鸟", if (connected) "已连接 · ${pcName() ?: "电脑"}" + (status.via?.let { " · $it" } ?: "") else baseText())
         val pending = pendingText()
         if (pending.isNotEmpty()) {
-            row("刚才没发出去的 ${count(pending)} 字", if (connected) "发送、复制或丢弃" else "连上电脑后可以发送，也可以先复制") {
+            row("刚才没发出去的 ${count(pending)} 字", if (connected) "发送、复制或丢弃" else "连上后发送，或先复制") {
                 s.dismiss()
                 showPendingSheet()
             }
@@ -1624,7 +1624,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             checked = if (pend != null) !pend else mappingPaused,
             enabled = connected && pend == null,
         ) { on -> requestEnabled(!on) }
-        row("发文件到电脑", if (connected) "照片、文档发过去；相册里分享给蒜鸟也行" else "连上电脑后才能用", enabled = connected) {
+        row("发文件到电脑", if (connected) "照片、文档，相册里分享也行" else "连上电脑后才能用", enabled = connected) {
             s.dismiss()
             pickFiles()
         }
@@ -1638,12 +1638,12 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 s.refresh()
             }
         }
-        if (models.isEmpty()) row("本地识别", "手机上还没装语音模型", enabled = false, trailing = null, onClick = null)
-        radio("系统引擎（联网，无标点）", "小米自带的语音识别；一句一句出字", model == null) {
+        if (models.isEmpty()) row("本地识别", "没有语音模型：去网页下完整安装包", enabled = false, trailing = null, onClick = null)
+        radio("系统引擎（联网，无标点）", "手机自带，一句一句出字", model == null) {
             chooseAsr(ASR_SYSTEM)
             s.refresh()
         }
-        toggle("边说边打字", "说一段打一段；关掉后停顿一下再整句发", prefs.getBoolean(KEY_LIVE_TYPING, true)) { on ->
+        toggle("边说边打字", "说一段打一段，关掉就整句发", prefs.getBoolean(KEY_LIVE_TYPING, true)) { on ->
             prefs.edit().putBoolean(KEY_LIVE_TYPING, on).apply()
             applyVoiceSettings()
         }
@@ -1654,33 +1654,33 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             pickComputer()
         }
         val lan = LanBinding.load(this@MainActivity)
-        row("扫码连接电脑", if (lan == null) "蓝牙配对；同一个网络里还能走局域网" else lanLine(lan)) {
+        row("扫码连接电脑", if (lan == null) "蓝牙、局域网都能连" else lanLine(lan)) {
             s.dismiss()
             scanComputer()
         }
         if (lan != null && !lan.revoked && BackgroundGuide.worthOpening(this@MainActivity)) {
-            row("后台保持局域网", "别让手机在后台限制蒜鸟，息屏也不断") {
+            row("后台保持局域网", "息屏也不断开") {
                 s.dismiss()
                 openBatterySettings()
             }
         }
         if (lan != null) {
-            row("解除局域网绑定", "只在这部手机上忘掉「${lan.name}」", trailing = null) {
+            row("解除局域网绑定", "手机上忘掉「${lan.name}」", trailing = null) {
                 s.dismiss()
                 forgetLan(lan)
             }
         }
-        row("使用教程", "一步步看怎么连电脑、怎么用") {
+        row("使用教程", "怎么连电脑、怎么用") {
             s.dismiss()
             setup.showTutorial()
         }
-        row("手势说明", "触控板怎么点、怎么滚、怎么拖") {
+        row("手势说明", "触控板怎么点、滚、拖") {
             s.dismiss()
             showGestureGuide()
         }
         // 点了马上查一次：有新版本就关掉菜单弹更新面板，没有就只改这行的小字
         row("检查更新", updater.menuLine(), trailing = null) { updater.menuTapped() }
-        toggle("自动检查更新", "打开 App 时看看有没有新版本，只连 GitHub", updater.autoCheck) { on -> updater.autoCheck = on }
+        toggle("自动检查更新", "打开 App 时查一下", updater.autoCheck) { on -> updater.autoCheck = on }
         row("关于", aboutLine(), trailing = null) {
             aboutOpen = !aboutOpen
             s.refresh()
@@ -1692,7 +1692,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                     setPadding(dp(24), dp(2), dp(24), dp(6))
                 })
             }
-            row("开源许可", "蒜鸟用到的开源软件、语音模型和字体") {
+            row("开源许可", "开源软件、语音模型和字体") {
                 s.dismiss()
                 showLicenses()
             }
@@ -1702,12 +1702,12 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             s.refresh()
         }
         if (debugOpen) {
-            row("测延迟", latencyText ?: "连发 100 次，看消息来回一趟要多久", trailing = null) { latencyTest() }
-            row("电脑后台内存", memText ?: "看看电脑上的后台占多少内存", trailing = null) { askMemory() }
+            row("测延迟", latencyText ?: "连发 100 次看来回多久", trailing = null) { latencyTest() }
+            row("电脑后台内存", memText ?: "看看占了多少", trailing = null) { askMemory() }
         }
         if (status.phase != Phase.OFF) {
             divider()
-            row("断开连接", "不再自动重连，下次打开 App 时再连", trailing = null) {
+            row("断开连接", "下次打开 App 再连", trailing = null) {
                 s.dismiss()
                 disconnect()
             }
@@ -1721,9 +1721,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     }
 
     private fun modelSubtitle(m: LocalAsr.Model) = when {
-        "480" in m.name -> "在手机上识别，不用联网，带标点，出字快"
+        "480" in m.name -> "不用联网，带标点，出字快"
         "960" in m.name -> "出字慢一点，错字少一点"
-        else -> "在手机上识别，不用联网"
+        else -> "不用联网"
     }
 
     private fun aboutLine(): String {
@@ -1739,7 +1739,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             host != null || app != null -> "电脑：${host ?: pcName() ?: "未知"} · 蒜鸟 ${app ?: "未知版本"}"
             else -> "电脑：${pcName() ?: "还没连过"}"
         }
-        if (app != null && older(app, MIN_PC_VERSION)) lines += "电脑端版本较旧，更新到 $MIN_PC_VERSION 以后才能在手机上暂停按键、确认同步"
+        if (app != null && older(app, MIN_PC_VERSION)) lines += "电脑端较旧，更新到 $MIN_PC_VERSION 才能暂停按键、确认同步"
         return lines
     }
 

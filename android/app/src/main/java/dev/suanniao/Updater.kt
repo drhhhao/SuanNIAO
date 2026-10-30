@@ -36,6 +36,7 @@ import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.MalformedURLException
 import java.net.SocketTimeoutException
@@ -49,13 +50,20 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
- * 检查更新：看 GitHub 上最新那一版的 latest.json，有新版本就问要不要更新；要就下载、核对，交给系统安装。
+ * 检查更新：看最新那一版的 latest.json，有新版本就问要不要更新；要就下载、核对，交给系统安装。
  *
- * - 整个 App 只有这里联网，也只连 GitHub（github.com 和放文件的 *.githubusercontent.com）。语音识别照样在手机上做，不联网
+ * - 整个 App 只有这里联网（局域网连电脑除外），也只连 GitHub（github.com 和放文件的 *.githubusercontent.com）
+ *   和它在国内的镜像 Gitee（gitee.com 和放文件的 *.gitee.com）。语音识别照样在手机上做，不联网
+ * - 国内连 GitHub 慢：latest.json 先读 Gitee 上的，读不到再读 GitHub 的；安装包也先从 Gitee 下（那边单个附件最多
+ *   100 MB，拆成了几份 parts，按顺序接起来），下不成再从 GitHub 接着下。不管从哪下，都按下面的办法核对；
+ *   Gitee 上的东西就算被人换了，签名对不上也装不上（系统也会拒绝）
  * - 打开 App 时自己看一眼（离上次超过 6 小时；⋯ 菜单里能关），⋯ 菜单里「检查更新」随时看
  * - 自己查到的新版本：没开着别的面板、教程，没在调整布局、没在说话，手也离开屏幕一会儿了才弹。
  *   「以后再说」一天内不再弹，「跳过这个版本」这一版不再弹（菜单里查照样显示）
- * - 安装包带着语音模型，一百五十多 MB：下到 App 自己的缓存目录，断了接着下（HTTP Range）；
+ * - 完整安装包带着语音模型，一百六十 MB 左右；每一版还有一个不带模型的更新包（三十 MB 左右，latest.json 的 android.lite）。
+ *   新版要的模型手机上有（装着的安装包里带着，或者手机存储里已经有一份）就只下更新包，装之前把模型拷到手机存储
+ *   （LocalAsr.copyBundled），新版从那里读；没有（比如换了模型）就下完整安装包
+ * - 下到 App 自己的缓存目录，断了接着下（HTTP Range）；
  *   下完核对大小和 SHA-256，再看是不是蒜鸟、是不是更新的版本、签名和装着的对不对得上
  * - 自己编译的调试版和正式版签名不一样，覆盖装不上：调试版不给下载，说清楚情况，给「去网页下载」
  */
@@ -92,10 +100,26 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         val notes: List<String>,
         /** 这一版的发布页（「去网页下载」打开它） */
         val page: String,
+        /** Gitee 上这一版的下载地址（以 / 结尾，后面接文件名）；没同步过去是 null */
+        val mirror: String?,
+        /** 安装包在 Gitee 上拆成的几份，按顺序接起来就是整个安装包；没有就是空的 */
+        val parts: List<Part>,
+        /** 这是不带模型的更新包：要手机上先有这个模型 */
+        val needs: ModelNeed? = null,
+        /** 完整安装包这边：同一版的更新包（latest.json 里没有就是 null） */
+        val lite: Info? = null,
     ) {
         /** 比装着的这个新 */
         val newer get() = code > BuildConfig.VERSION_CODE
+        /** 面板上怎么叫它 */
+        val kind get() = if (needs != null) "更新包" else "安装包"
     }
+
+    /** Gitee 上拆开的一份 */
+    class Part(val file: String, val size: Long)
+
+    /** 更新包要用的语音模型：目录名和几个文件加起来的大小 */
+    class ModelNeed(val name: String, val size: Long)
 
     /** 正在下的一次（取消了就作废，再下是新的一次） */
     private class Download(val info: Info) {
@@ -105,6 +129,8 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         @Volatile var done = 0L
         /** 下完了，正在核对 */
         @Volatile var verifying = false
+        /** 这次是从 Gitee 下的（核对没过的话，下次直接从 GitHub 下） */
+        @Volatile var mirrored = false
     }
 
     /** 下好、核对过、等着装的安装包 */
@@ -194,6 +220,9 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             if (fresh && saved.substringBefore(' ') == info?.takeIf { it.newer }?.sha256) sentToSettings = true
         }
         cleanup()
+        // 装回了完整安装包：以前为更新拷到手机存储的模型用不上了（有个更新包正等着装、要用它的除外）
+        val keep = setOfNotNull(info?.takeIf { it.newer }?.needs?.name)
+        thread(name = "model-cleanup", isDaemon = true) { runCatching { LocalAsr.dropCopiesOfBundled(app, keep) } }
     }
 
     // ───────── MainActivity 调的 ─────────
@@ -271,7 +300,8 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         val t = info?.takeIf { it.newer }
         return when {
             checking -> "正在检查…"
-            d != null -> if (d.verifying) "正在核对 ${d.info.version}…" else "正在下载 ${d.info.version} · ${percent(d)}%"
+            preparing != null -> "正在准备安装 ${preparing?.version}…"
+            d != null ->if (d.verifying) "正在核对 ${d.info.version}…" else "正在下载 ${d.info.version} · ${percent(d)}%"
             r != null -> "${r.info.version} 已经下好，点这里安装"
             t != null && conflict?.sha256 == t.sha256 -> "${t.version} 没法直接更新，点这里看看"
             t != null && failure != null -> "${t.version} 没下好，点这里重试"
@@ -313,10 +343,15 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         val gen = ++checkGen
         main.removeCallbacks(autoTask)
         host.onUpdateChanged()
-        val url = debugUrl ?: MANIFEST_URL
+        // 先读 Gitee 的（国内快），读不到再读 GitHub 的；都没读到时说 GitHub 那边的原因
+        val urls = debugUrl?.let { listOf(it) } ?: listOf(GITEE_MANIFEST_URL, MANIFEST_URL)
         val test = debugUrl != null
         thread(name = "update-check", isDaemon = true) {
-            val result = runCatching { fetchManifest(url, test) }
+            var result = Result.failure<Info>(IOException())
+            for (url in urls) {
+                result = runCatching { fetchManifest(url, test) }
+                if (result.isSuccess) break
+            }
             val why = result.exceptionOrNull()?.let(::checkReason)
             main.post { if (gen == checkGen) checked(result.getOrNull(), why) }
         }
@@ -329,8 +364,9 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         checkedAt = System.currentTimeMillis()
         checkError = why
         if (found != null) {
-            val changed = found.sha256 != info?.sha256
-            info = found
+            val pick = choose(found)
+            val changed = pick.sha256 != info?.sha256
+            info = pick
             // 换了一版：之前下好的、出过错的都不算了，旧安装包删掉
             if (changed && download == null) {
                 ready = null
@@ -349,6 +385,18 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             why != null -> if (manual) overlays.notice("检查失败：$why", action = "去网页下载") { openPage() }
             manual -> host.updateNotice("已是最新版本（${BuildConfig.VERSION_NAME}）")
         }
+    }
+
+    /**
+     * 下哪个：新版要的模型手机上有（装着的安装包里带着，或者手机存储里有完整的一份），就下不带模型的更新包；
+     * 没有（换了模型、手机存储里那份被删了）或者拷模型失败过，就下完整安装包
+     */
+    private fun choose(full: Info): Info {
+        val lite = full.lite ?: return full
+        val need = lite.needs ?: return full
+        if (liteFailed == lite.sha256) return full
+        val have = runCatching { LocalAsr.hasLocal(app, need.name, need.size) || LocalAsr.isBundled(app, need.name) }.getOrDefault(false)
+        return if (have) lite else full
     }
 
     /** 自己查到的新版本能不能弹：没跳过这一版，也不在「以后再说」的一天里 */
@@ -453,8 +501,12 @@ class Updater(private val host: Host, private val overlays: Overlays) {
                 return
             }
             val from = BuildConfig.VERSION_NAME + if (BuildConfig.DEBUG) "（调试版）" else ""
-            val line = "$from → ${t.version} · 安装包 ${mb(t.size)}"
+            val line = "$from → ${t.version} · ${t.kind} ${mb(t.size)}"
             when {
+                preparing != null -> {
+                    header("正在准备安装 ${t.version}", "语音模型留在手机上，以后更新不用再下")
+                    buttons(Btn("收起") { s.dismiss() })
+                }
                 debugBlocked -> {
                     header("发现新版本 ${t.version}", line)
                     notes(t)
@@ -466,8 +518,8 @@ class Updater(private val host: Host, private val overlays: Overlays) {
                     moreButtons(Btn("以后再说") { later(); s.dismiss() }, Btn("跳过这个版本") { skip(t); s.dismiss() })
                 }
                 d != null -> {
-                    if (d.verifying) header("正在核对 ${t.version}", "看看安装包完不完整、是不是蒜鸟")
-                    else header("正在下载 ${t.version}", "可以先收起，下好了会再告诉你")
+                    if (d.verifying) header("正在核对 ${t.version}", "确认完整、是原版")
+                    else header("正在下载 ${t.version}", "可以先收起，下好会提醒")
                     progress(d)
                     buttons(Btn("取消下载") { cancel() }, Btn("收起") { s.dismiss() })
                     webLink()
@@ -498,7 +550,7 @@ class Updater(private val host: Host, private val overlays: Overlays) {
                     webLink()
                 }
                 r != null -> {
-                    header("${t.version} 已经下好", "按系统的提示装上就行，设置都会留着")
+                    header("${t.version} 已经下好", "按系统提示装上，设置都留着")
                     if (installerReturned) paragraph("没装上？再点一次「安装」；还不行就去网页下载。", strong = true)
                     buttons(Btn("安装", Style.PRIMARY) {
                         undecided = false
@@ -512,7 +564,7 @@ class Updater(private val host: Host, private val overlays: Overlays) {
                     val have = maxOf(File(dir(app), "${t.sha256}.part").length(), File(dir(app), "${t.sha256}.apk").length())
                     header("发现新版本 ${t.version}", line + if (have > 0) "（已下 ${mb(have)}）" else "")
                     notes(t)
-                    if (metered()) paragraph("正在用流量：安装包 ${mb(t.size)}，最好连上 Wi-Fi 再下。", strong = true)
+                    if (metered()) paragraph("正在用流量：${t.kind} ${mb(t.size)}，最好连上 Wi-Fi 再下。", strong = true)
                     buttons(Btn("立即更新", Style.PRIMARY) {
                         undecided = false
                         start()
@@ -670,13 +722,62 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             if (part.length() > t.size) part.delete()
             val need = t.size - part.length() + SPARE_BYTES
             if (dir.usableSpace < need) throw Failure("手机存储空间不够：还要大约 ${mb(need)}，清理一下再试。")
-            if (part.length() < t.size) pull(d, part, test)
+            if (part.length() < t.size && !pullParts(d, part, test)) pull(d, part, test)
             if (!part.renameTo(apk)) throw IOException("改名失败")
         }
         d.verifying = true
         main.post { attached?.refresh() }
-        verify(d, apk)
+        try {
+            verify(d, apk)
+        } catch (e: Failure) {
+            // 从 Gitee 下的没核对过：下次从 GitHub 下
+            if (d.mirrored) skipMirror = t.sha256
+            throw e
+        }
         apk
+    }
+
+    /**
+     * 先从 Gitee 下（国内快）：安装包在那边拆成了几份，按顺序接在 part 后面。Gitee 不认续传，
+     * 下了一半的那份截掉重下，已经下完的整份留着。下成了返回 true；没有镜像、下不成返回 false，
+     * 接着从 GitHub 下（part 里已有的就是安装包开头那一段，用 Range 接得上）
+     */
+    private fun pullParts(d: Download, part: File, test: Boolean): Boolean {
+        val t = d.info
+        val mirror = t.mirror ?: return false
+        if (t.parts.isEmpty() || skipMirror == t.sha256) return false
+        var start = 0L
+        var next = 0
+        while (next < t.parts.size && start + t.parts[next].size <= part.length()) start += t.parts[next++].size
+        return try {
+            for (i in next until t.parts.size) {
+                val p = t.parts[i]
+                RandomAccessFile(part, "rw").use { it.setLength(start) }
+                d.done = start
+                val c = open(mirror + p.file, test, from = 0, gzip = false)
+                try {
+                    d.conn = c
+                    if (c.responseCode != HttpURLConnection.HTTP_OK) throw IOException("Gitee 返回 ${c.responseCode}")
+                    val length = c.contentLengthLong
+                    if (length >= 0 && length != p.size) throw IOException("Gitee 上 ${p.file} 的大小对不上")
+                    if (d.cancelled) throw Cancelled()
+                    if (save(d, c, part, append = true, from = start, end = start + p.size) != start + p.size) throw IOException("没下完")
+                } finally {
+                    d.conn = null
+                    c.disconnect()
+                }
+                start += p.size
+            }
+            d.mirrored = true
+            true
+        } catch (e: Cancelled) {
+            throw e
+        } catch (e: Exception) {
+            if (d.cancelled) throw Cancelled()
+            // 没下完的那份截掉，GitHub 从整份的边上接着下
+            runCatching { RandomAccessFile(part, "rw").use { it.setLength(start) } }
+            false
+        }
     }
 
     /** 从 part 现有的长度接着下；服务器不认续传（回 200）就从头下 */
@@ -703,40 +804,47 @@ class Updater(private val host: Host, private val overlays: Overlays) {
                     true
                 }
                 HttpURLConnection.HTTP_OK -> false
-                HttpURLConnection.HTTP_NOT_FOUND -> throw Failure("GitHub 上找不到这个安装包（404），去网页看看。")
-                else -> throw Failure("下载失败：GitHub 返回 $code，过一会儿再试。")
+                HttpURLConnection.HTTP_NOT_FOUND -> throw Failure("发布页上找不到这个安装包（404），去网页看看。")
+                else -> throw Failure("下载失败：服务器返回 $code，过一会儿再试。")
             }
             if (!append) have = 0
             d.done = have
             val length = c.contentLengthLong
             if (length >= 0 && have + length != t.size) throw Failure("安装包和更新信息里的大小对不上，过一会儿再试。")
             if (d.cancelled) throw Cancelled()
-            FileOutputStream(part, append).use { out ->
-                c.inputStream.use { input ->
-                    val buf = ByteArray(64 * 1024)
-                    var shownAt = 0L
-                    while (true) {
-                        val n = input.read(buf)
-                        if (d.cancelled) throw Cancelled()
-                        if (n < 0) break
-                        if (have + n > t.size) throw Failure("安装包比更新信息里说的大，没装。")
-                        out.write(buf, 0, n)
-                        have += n
-                        d.done = have
-                        val now = SystemClock.uptimeMillis()
-                        if (now - shownAt >= 150) {
-                            shownAt = now
-                            main.post { attached?.progressed(d) }
-                        }
-                    }
-                }
-            }
-            main.post { attached?.progressed(d) }
+            have = save(d, c, part, append, from = have, end = t.size)
             if (have != t.size) throw IOException("没下完")
         } finally {
             d.conn = null
             c.disconnect()
         }
+    }
+
+    /** 把 c 的内容写进 part（append：接在后面），最多写到 end 字节；返回写完后 part 有多长 */
+    private fun save(d: Download, c: HttpURLConnection, part: File, append: Boolean, from: Long, end: Long): Long {
+        var have = from
+        FileOutputStream(part, append).use { out ->
+            c.inputStream.use { input ->
+                val buf = ByteArray(64 * 1024)
+                var shownAt = 0L
+                while (true) {
+                    val n = input.read(buf)
+                    if (d.cancelled) throw Cancelled()
+                    if (n < 0) break
+                    if (have + n > end) throw Failure("安装包比更新信息里说的大，没装。")
+                    out.write(buf, 0, n)
+                    have += n
+                    d.done = have
+                    val now = SystemClock.uptimeMillis()
+                    if (now - shownAt >= 150) {
+                        shownAt = now
+                        main.post { attached?.progressed(d) }
+                    }
+                }
+            }
+        }
+        main.post { attached?.progressed(d) }
+        return have
     }
 
     /** 核对：大小、SHA-256，再看是不是蒜鸟、是不是更新的版本、签名和装着的对不对得上（对不上系统会拒绝覆盖安装） */
@@ -819,6 +927,8 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             needPermission = true
             return refresh()
         }
+        val need = r.info.needs
+        if (need != null && !LocalAsr.hasLocal(app, need.name, need.size)) return prepareModel(r, need)
         needPermission = false
         stillNoPermission = false
         installerReturned = false
@@ -832,6 +942,41 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             }
             .onFailure { failure = "打不开系统的安装界面。" }
         refresh()
+    }
+
+    /**
+     * 装更新包之前：把装着的安装包里带的模型拷到手机存储（一两秒），拷好接着装。
+     * 空间不够就说一声；拷不出来（这一版装着的安装包里没有这个模型、大小对不上）就改下完整安装包
+     */
+    private fun prepareModel(r: Ready, need: ModelNeed) {
+        if (preparing != null) return
+        val free = runCatching { app.getExternalFilesDir(null)?.usableSpace ?: 0L }.getOrDefault(0L)
+        if (free < need.size + SPARE_BYTES) {
+            failure = "手机存储空间不够：语音模型要先留出大约 ${mb(need.size + SPARE_BYTES)}，清理一下再试。"
+            return refresh()
+        }
+        preparing = r.info
+        refresh()
+        thread(name = "update-model", isDaemon = true) {
+            val ok = runCatching { LocalAsr.copyBundled(app, need.name, need.size) }.getOrDefault(false)
+            main.post {
+                preparing = null
+                if (ok) {
+                    attached?.install()
+                } else {
+                    liteFailed = r.info.sha256
+                    attached?.useFullPackage(r.info)
+                }
+            }
+        }
+    }
+
+    /** 更新包这条路走不通：这一版改下完整安装包（带着模型），面板开着就直接开始下 */
+    private fun useFullPackage(lite: Info) {
+        if (ready?.info === lite) ready = null
+        info = runCatching { parse(lite.raw) }.getOrNull()?.let(::choose) ?: info
+        cleanup()
+        start()
     }
 
     /** 带去「安装未知应用」里蒜鸟那一项；回来时（onResume）允许了就接着装 */
@@ -863,8 +1008,8 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         try {
             when (val code = c.responseCode) {
                 HttpURLConnection.HTTP_OK -> {}
-                HttpURLConnection.HTTP_NOT_FOUND -> throw Failure("GitHub 上还没有更新信息")
-                else -> throw Failure("GitHub 返回 $code")
+                HttpURLConnection.HTTP_NOT_FOUND -> throw Failure("发布页上还没有更新信息")
+                else -> throw Failure("服务器返回 $code")
             }
             val bytes = c.inputStream.use { readAtMost(it, MAX_MANIFEST) } ?: throw Failure("更新信息太大，读不懂")
             return parse(String(bytes, Charsets.UTF_8))
@@ -874,14 +1019,15 @@ class Updater(private val host: Host, private val overlays: Overlays) {
     }
 
     /**
-     * 发一个 GET。跳转自己跟（最多几次），每一跳都核对：只走 https、只去 GitHub
-     * （github.com 会先跳到那一版的发布，再跳到 release-assets.githubusercontent.com 这类放文件的地址）。
+     * 发一个 GET。跳转自己跟（最多几次），每一跳都核对：只走 https、只去 GitHub 和 Gitee
+     * （github.com 会先跳到那一版的发布，再跳到 release-assets.githubusercontent.com 这类放文件的地址；
+     * gitee.com 跳两次，到 foruda.gitee.com）。
      * 调试版的测试地址不限（调试版的网络设置另外只放行本机 127.0.0.1 的 http）
      */
     private fun open(url: String, test: Boolean, from: Long, gzip: Boolean): HttpURLConnection {
         var u = URL(url)
         repeat(MAX_HOPS) {
-            if (!allowed(u, test)) throw Failure("地址不在 GitHub 上（${u.host}），没连")
+            if (!allowed(u, test)) throw Failure("地址不在 GitHub、Gitee 上（${u.host}），没连")
             val c = u.openConnection() as HttpURLConnection
             c.instanceFollowRedirects = false
             c.connectTimeout = 15_000
@@ -895,7 +1041,7 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             if (code !in REDIRECTS) return c
             val next = c.getHeaderField("Location")
             c.disconnect()
-            if (next.isNullOrBlank()) throw Failure("GitHub 返回 $code")
+            if (next.isNullOrBlank()) throw Failure("服务器返回 $code")
             u = URL(u, next)
         }
         throw Failure("跳转太多次")
@@ -904,7 +1050,8 @@ class Updater(private val host: Host, private val overlays: Overlays) {
     private fun allowed(u: URL, test: Boolean): Boolean {
         if (test) return u.protocol == "https" || u.protocol == "http"
         val host = u.host.lowercase()
-        return u.protocol == "https" && (host == "github.com" || host.endsWith(".githubusercontent.com"))
+        return u.protocol == "https" &&
+            (host == "github.com" || host.endsWith(".githubusercontent.com") || host == "gitee.com" || host.endsWith(".gitee.com"))
     }
 
     private fun readAtMost(input: InputStream, limit: Int): ByteArray? {
@@ -927,15 +1074,15 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         e is Failure -> e.message
         e is MalformedURLException -> "更新信息里的地址不对"
         offline() -> "没联网"
-        e is SocketTimeoutException -> "连 GitHub 超时"
-        else -> "连不上 GitHub"
+        e is SocketTimeoutException -> "连发布页超时"
+        else -> "连不上发布页（GitHub 和国内的 Gitee 都试过了）"
     }
 
     private fun downloadReason(e: Throwable): String = when {
         e is Failure -> e.message
         e is MalformedURLException -> "更新信息里的下载地址不对，去网页下载吧。"
         offline() -> "没联网，没下完。已下的部分留着，联网后点「重试」接着下。"
-        else -> "连不上 GitHub，没下完。已下的部分留着，点「重试」接着下。"
+        else -> "连不上下载的服务器，没下完。已下的部分留着，点「重试」接着下。"
     }
 
     private fun offline() = runCatching { app.getSystemService(ConnectivityManager::class.java)?.activeNetwork == null }.getOrDefault(false)
@@ -950,7 +1097,7 @@ class Updater(private val host: Host, private val overlays: Overlays) {
 
     private fun load() {
         val saved = prefs.getString(k(KEY_UPDATE_RESULT), null)?.let { runCatching { JSONObject(it) }.getOrNull() }
-        info = (saved?.opt("manifest") as? String)?.let { runCatching { parse(it) }.getOrNull() }
+        info = (saved?.opt("manifest") as? String)?.let { runCatching { parse(it) }.getOrNull() }?.let(::choose)
         checkError = (saved?.opt("error") as? String)?.takeIf { it.isNotEmpty() }
         checkedAt = prefs.getLong(k(KEY_UPDATE_CHECKED_AT), 0L)
     }
@@ -1030,6 +1177,10 @@ class Updater(private val host: Host, private val overlays: Overlays) {
 
         /** 最新一版的更新信息：GitHub 先跳到那一版的发布，再跳到放文件的地址 */
         private const val MANIFEST_URL = "https://github.com/drhhhao/SuanNIAO/releases/latest/download/latest.json"
+        /** Gitee 上最新一版的更新信息（Gitee 的 latest 指最新建的发行版；国内快，先读这个） */
+        private const val GITEE_MANIFEST_URL = "https://gitee.com/drhhhao_0/SuanNIAO/releases/download/latest/latest.json"
+        /** latest.json 里的 mirror 只认这个开头的（调试版另外认本机的 http，测试用） */
+        private const val MIRROR_PREFIX = "https://gitee.com/drhhhao_0/SuanNIAO/releases/download/"
         /** 更新信息里没写发布页（或写的不是 GitHub）时，「去网页下载」打开这里 */
         private const val RELEASES_PAGE = "https://github.com/drhhhao/SuanNIAO/releases/latest"
         /** 认得的 latest.json 格式，比它新的读不懂 */
@@ -1054,6 +1205,9 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         const val APK_MIME = "application/vnd.android.package-archive"
         val HEX64 = Regex("[0-9a-f]{64}")
         private val FILE_NAME = Regex("[A-Za-z0-9._-]{1,80}\\.apk")
+        private val PART_NAME = Regex("[A-Za-z0-9._-]{1,90}")
+        /** 模型的目录名（不能以点开头：那是拷到一半的临时目录） */
+        private val MODEL_NAME = Regex("[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}")
         private val RANGE = Regex("""bytes\s+(\d+)-""")
 
         private const val DEBUG_TEXT = "这是自己编译的调试版，签名和正式版不一样，不能直接更新。要换成正式版得先卸载这个，手机上的设置会丢。"
@@ -1067,10 +1221,16 @@ class Updater(private val host: Host, private val overlays: Overlays) {
         private var failure: String? = null
         /** 签名对不上的那一版 */
         private var conflict: Info? = null
+        /** 正在把模型拷到手机存储、拷好就装的那个更新包 */
+        private var preparing: Info? = null
+        /** 拷不出模型的那个更新包（SHA-256）：这个进程里不再选它，下完整安装包 */
+        private var liteFailed: String? = null
         /** 现在的界面（最新建的那个 Updater） */
         private var attached: Updater? = null
         /** 同一时间只有一个线程动安装包文件（取消后马上重下时，等上一个线程退出） */
         private val fileLock = Any()
+        /** 从 Gitee 下的这个安装包（SHA-256）没核对过：再下就直接从 GitHub 下 */
+        @Volatile private var skipMirror: String? = null
 
         /** 安装包放在这里（App 自己的缓存目录） */
         fun dir(context: Context) = File(context.cacheDir, "update")
@@ -1096,7 +1256,36 @@ class Updater(private val host: Host, private val overlays: Overlays) {
             }.orEmpty()
             val page = j.str("page").takeIf { it.startsWith("https://github.com/") } ?: RELEASES_PAGE
             val file = a.str("file").takeIf { FILE_NAME.matches(it) } ?: "SuanNIAO-Android-$version.apk"
-            return Info(text, version, code.toInt(), url, size, sha, file, notes, page)
+            // Gitee 上的下载地址和拆开的几份：地址不对、几份加起来不是整个安装包的大小，就当没有，只从 GitHub 下
+            val mirror = j.str("mirror").takeIf {
+                it.endsWith("/") && (it.startsWith(MIRROR_PREFIX) || (BuildConfig.DEBUG && it.startsWith("http://127.0.0.1")))
+            }
+            val parts = a.optJSONArray("parts")?.let { arr ->
+                (0 until arr.length()).map { i ->
+                    val p = arr.optJSONObject(i) ?: return@let emptyList()
+                    val name = p.str("file").takeIf { PART_NAME.matches(it) } ?: return@let emptyList()
+                    Part(name, p.optLong("size", 0L).takeIf { it > 0 } ?: return@let emptyList())
+                }
+            }.orEmpty().takeIf { list -> list.sumOf { it.size } == size }.orEmpty()
+            val lite = a.optJSONObject("lite")?.let { parseLite(it, text, version, code.toInt(), notes, page, mirror) }
+            return Info(text, version, code.toInt(), url, size, sha, file, notes, page, mirror, parts, lite = lite)
+        }
+
+        /**
+         * 不带模型的更新包（android.lite）：{file, url, size, sha256, model: {name, size}}。缺东西、不对劲就当没有，
+         * 只下完整安装包。它不到 100 MB，Gitee 上不拆，整个文件就是一份
+         */
+        private fun parseLite(l: JSONObject, text: String, version: String, code: Int, notes: List<String>, page: String, mirror: String?): Info? {
+            val url = l.str("url")
+            val size = l.optLong("size", 0L)
+            val sha = l.str("sha256").lowercase()
+            val file = l.str("file").takeIf { FILE_NAME.matches(it) } ?: return null
+            val m = l.optJSONObject("model") ?: return null
+            val model = m.str("name").takeIf { MODEL_NAME.matches(it) } ?: return null
+            val modelSize = m.optLong("size", 0L)
+            if (url.isEmpty() || size <= 0 || !HEX64.matches(sha) || modelSize <= 0) return null
+            val parts = if (mirror != null) listOf(Part(file, size)) else emptyList()
+            return Info(text, version, code, url, size, sha, file, notes, page, mirror, parts, needs = ModelNeed(model, modelSize))
         }
 
         /** 字符串字段（没有、是 null、不是字符串都算空） */

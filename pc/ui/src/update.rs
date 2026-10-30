@@ -135,7 +135,7 @@ impl Updater {
             None => ("已经是最新版".to_string(), 4),
         };
         let note = if state.checked == 0 {
-            "去 GitHub 看看有没有新版本".to_string()
+            "联网看看有没有新版本".to_string()
         } else if !state.error.is_empty() && available.is_none() {
             format!("上次检查（{}）没查成：{}", win::local_time_text(state.checked), state.error)
         } else {
@@ -265,7 +265,7 @@ impl Updater {
         self.close();
         let Some(version) = self.shown.borrow().as_ref().map(|m| m.pc.version.clone()) else { return };
         self.save(|s| s.skip = version);
-        toast("这个版本不再提醒了，想装的话在「关于」里点「查看更新」");
+        toast("这个版本不再提醒，想装就在「关于」里点「查看更新」");
     }
 
     fn cancel(&self) {
@@ -293,11 +293,12 @@ impl Updater {
         ui.set_update_stage(1);
         ui.set_update_progress(0.0);
         ui.set_update_progress_text("正在连接…".into());
+        let mirror = manifest.mirror;
         let asset = manifest.pc;
         let dest = update::installer_path(&asset);
         std::thread::spawn(move || {
             let mut last: Option<Instant> = None;
-            let result = update::download(&asset, &dest, &cancel, |done, total| {
+            let result = update::download(&asset, &mirror, &dest, &cancel, |done, total| {
                 if last.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) || done == total {
                     last = Some(Instant::now());
                     let _ = slint::invoke_from_event_loop(move || with_updater(|u| u.progress(done, total)));
@@ -386,6 +387,6 @@ fn phone_hint(manifest: &Manifest, phone_app: &str) -> String {
     if phone.is_empty() || !update::newer(latest, phone) {
         return String::new();
     }
-    // 电脑上的雅黑没有「⋯」这个字，写成「三个点」
-    format!("手机 App 也有新版 {latest}（现在是 {phone}）：在手机上打开蒜鸟，点右上角的三个点 →「检查更新」。")
+    // 电脑上的雅黑没有「⋯」这个字，写成「···」
+    format!("手机 App 也有新版 {latest}（现在是 {phone}）：手机蒜鸟里点右上角「···」→「检查更新」。")
 }

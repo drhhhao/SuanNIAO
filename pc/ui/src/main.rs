@@ -700,7 +700,7 @@ fn action_item(step: &Step, profiles: usize) -> ActionItem {
             if keys.is_empty() {
                 item.problem = "还没填组合键：用 + 连接，或者点「录制」按一下".into();
             } else if let Some(bad) = keys.iter().find(|k| config::key_code(k).is_none()) {
-                item.problem = format!("不认识「{bad}」：按键名和「按键」下拉框里的一样（Ctrl、Shift、Alt、Win、A、F5、Enter……），用 + 连接").into();
+                item.problem = format!("不认识「{bad}」：键名照「按键」下拉框里的写（Ctrl、Shift、A、F5……），用 + 连接").into();
             }
         }
         Action::Mouse { button } => item.choice = position(&MOUSE_BUTTONS, button),
@@ -1547,7 +1547,7 @@ impl Ctx {
 
     /// 换一个文件夹存手机发来的文件（可以撤销）。选的就是默认位置的话记成空：以后「下载」挪了位置也跟着走
     fn pick_receive_folder(self: &Rc<Self>) {
-        win::file_dialog(win::FileDialog::Folder(self.receive_folder()), |path| {
+        win::file_dialog(win::FileDialog::Folder(self.receive_folder(), "手机发来的文件存到哪个文件夹"), |path| {
             with_ctx(|ctx| {
                 if let Some(path) = path {
                     ctx.receive_folder_picked(path);
@@ -1838,7 +1838,7 @@ impl Ctx {
     }
 
     fn drag_failed(self: &Rc<Self>) {
-        self.toast("那里放不下：会和别的模块重叠，或者超出屏幕（拖到同样大小的模块上可以互换）");
+        self.toast("那里放不下：会重叠或超出屏幕（拖到一样大的模块上能互换）");
     }
 
     /// 属性面板里直接输入的数
@@ -2015,7 +2015,7 @@ impl Ctx {
 
     /// 点了用不了的「直通」
     fn hold_blocked(self: &Rc<Self>) {
-        self.toast("「直通」要单击正好是一个按键或组合键：先把单击设好");
+        self.toast("「直通」要单击只有一个键或组合键：先把单击设好");
     }
 
     /// 布局页属性面板里的「按住时」（不动别的输入框）
@@ -2101,7 +2101,7 @@ impl Ctx {
                 None => return,
             }
         };
-        self.toast(&format!("「{title}」按住时是「{}」，{}不会生效；要用就把按住时改成「长按一次」或「重复长按」", hold.name(), trigger.name()));
+        self.toast(&format!("「{title}」按住时是「{}」，{}不生效；要用就改成「长按一次」或「重复长按」", hold.name(), trigger.name()));
     }
 
     /// 映射页里的「按住时」

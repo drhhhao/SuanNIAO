@@ -2,12 +2,14 @@
 name = "suanniao-update"
 version = "0.1.0"
 edition = "2021"
-description = "蒜鸟电脑端检查新版本：读发布页上的 latest.json，下载安装包、核对指纹"
+description = "蒜鸟电脑端检查新版本：读 Gitee / GitHub 上的 latest.json、核对签名，下载安装包、核对指纹"
 
 [dependencies]
 suanniao-config = { path = "../config" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 核对 latest.json 的 Ed25519 签名（局域网连接也在用这个库）
+ring = "0.17"
 
 [dependencies.windows]
 version = "0.62"

@@ -210,7 +210,7 @@ impl Ctx {
 
     pub(crate) fn profile_new(self: &Rc<Self>) {
         let initial = self.app.borrow().config.unique_profile_name("新方案");
-        self.open_name(Naming::NewProfile, "新增方案", "新方案里所有按键都先空着，布局还是共用的。要带上现在的动作就用「复制」。", &initial, "新增并切过去");
+        self.open_name(Naming::NewProfile, "新增方案", "按键都先空着，布局共用。要带上现在的动作就用「复制」。", &initial, "新增并切过去");
     }
 
     pub(crate) fn profile_copy(self: &Rc<Self>) {
@@ -218,7 +218,7 @@ impl Ctx {
             let config = &self.app.borrow().config;
             config.unique_profile_name(&format!("{} 副本", config.active_profile_name()))
         };
-        self.open_name(Naming::CopyProfile, "复制当前方案", "新方案里每个按键的动作和按住时都和当前方案一样。", &initial, "复制并切过去");
+        self.open_name(Naming::CopyProfile, "复制当前方案", "按键的动作、按住时都和当前方案一样。", &initial, "复制并切过去");
     }
 
     pub(crate) fn profile_rename(self: &Rc<Self>) {

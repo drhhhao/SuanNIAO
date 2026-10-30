@@ -5,6 +5,7 @@
 //! - `--setup [--update] [--dir 文件夹] [--silent] [--no-desktop]`：装到 dir（默认是登记过的位置，没装过就是
 //!   %LOCALAPPDATA%\Programs\SuanNIAO），只给当前用户装、不要管理员权限。先关掉那个文件夹里开着的蒜鸟，换掉两个 exe，
 //!   开始菜单（和桌面）放「蒜鸟」，在系统的「应用」里登记（卸载入口）。
+//!   安装界面上能换文件夹（「更改」）；装过的换了文件夹就是搬家：装到新位置，再删掉原来那份。
 //!   --update 是主界面下载好新版以后打开的：不问、直接装到主界面所在的文件夹，装好打开新版。
 //! - `--uninstall [--silent] [--remove-data]`：系统「应用」里点卸载时运行装好的 SuanNIAO.exe。
 //!
@@ -51,6 +52,7 @@ const LINK_NAME: &str = "蒜鸟.lnk";
 /// 开机自启（Run 里的名字，同 win.rs）
 const RUN_VALUE: &str = "SuanNIAO";
 const SANDBOX_ENV: &str = "SUANNIAO_SETUP_SANDBOX";
+const PICK_ENV: &str = "SUANNIAO_SETUP_PICK";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 安装窗口的大小（和 app.slint 里 SetupWindow 的一样），放到屏幕中间用
@@ -135,6 +137,8 @@ struct Job {
     /// 要装的文件在哪（安装包解出来的临时文件夹）
     from: PathBuf,
     dir: PathBuf,
+    /// 搬家：原来装在这里（登记过的那份），装好新的以后删掉
+    old_dir: Option<PathBuf>,
     desktop: bool,
     remove_data: bool,
     places: Places,
@@ -159,7 +163,7 @@ pub fn run(args: &[String]) -> i32 {
     let installed = installed_version(&dir, &places);
     // 桌面上放不放：没装过默认放；装过的看现在桌面上有没有
     let desktop = options.desktop && (installed.is_none() || points_into(&places.desktop.join(LINK_NAME), &dir));
-    let job = Job { mode: options.mode, from: win::exe_dir(), dir, desktop, remove_data: options.remove_data, places };
+    let job = Job { mode: options.mode, from: win::exe_dir(), dir, old_dir: None, desktop, remove_data: options.remove_data, places };
     let code = if options.silent { silent(&job) } else { window(job.clone(), installed) };
     if job.mode == Mode::Uninstall && code == 0 {
         delete_self_later(&job.dir);
@@ -192,6 +196,10 @@ fn launch(job: &Job) {
 struct Shared {
     ui: slint::Weak<SetupWindow>,
     job: RefCell<Job>,
+    /// 一开始要装到的文件夹（装过的话就是装着的地方）
+    original: PathBuf,
+    /// 原来装着蒜鸟，而且是登记过的那份：换了文件夹就搬家
+    movable: bool,
     /// 关不了窗口（正在装，或者马上要装）
     busy: Cell<bool>,
     /// 正在装（别的线程在做）
@@ -223,14 +231,16 @@ fn window(job: Job, installed: Option<String>) -> i32 {
         Mode::Uninstall => 2,
     });
     ui.set_version(VERSION.into());
-    ui.set_installed(installed.unwrap_or_default().into());
+    ui.set_installed(installed.clone().unwrap_or_default().into());
     ui.set_compare(compare);
     ui.set_folder(job.dir.display().to_string().into());
     ui.set_data_folder(config::data_dir().display().to_string().into());
     ui.set_desktop(job.desktop);
     ui.set_remove_data(job.remove_data);
     let update_mode = job.mode == Mode::Update;
-    let shared = Rc::new(Shared { ui: ui.as_weak(), job: RefCell::new(job), busy: Cell::new(false), running: Cell::new(false), code: Cell::new(2) });
+    let original = job.dir.clone();
+    let movable = installed.is_some() && registered_dir(&job.places).is_some_and(|r| same_place(&r, &original));
+    let shared = Rc::new(Shared { ui: ui.as_weak(), job: RefCell::new(job), original, movable, busy: Cell::new(false), running: Cell::new(false), code: Cell::new(2) });
     SETUP.with(|s| *s.borrow_mut() = Some(shared.clone()));
 
     // 和主界面一样：系统的标题栏换成自己画的，系统要重画时整个窗口重画
@@ -258,6 +268,7 @@ fn window(job: Job, installed: Option<String>) -> i32 {
     ui.on_minimize_window(|| win::window_command(win::WindowCommand::Minimize));
     ui.on_close_window(|| win::window_command(win::WindowCommand::Close));
     ui.on_start_setup(|| with_setup(start));
+    ui.on_change_folder(|| with_setup(change_folder));
     ui.on_finish(|| with_setup(|s| s.close()));
     ui.on_launch(|| {
         with_setup(|s| {
@@ -275,7 +286,14 @@ fn window(job: Job, installed: Option<String>) -> i32 {
             }
         });
     }
-    place_window(&ui, shared.job.borrow().places.sandbox.is_some());
+    let sandbox = shared.job.borrow().places.sandbox.is_some();
+    place_window(&ui, sandbox);
+    // 测试：SUANNIAO_SETUP_PICK=文件夹 当成在「更改」里选了它，=dialog 打开选文件夹的对话框（窗口在屏幕外面，点不了）
+    if let Some(pick) = std::env::var(PICK_ENV).ok().filter(|_| sandbox) {
+        Timer::single_shot(Duration::from_millis(600), move || {
+            with_setup(|s| if pick == "dialog" { change_folder(s) } else { s.folder_picked(Path::new(&pick)) })
+        });
+    }
     if update_mode {
         // 主界面下载好新版以后打开的：不用问，直接装
         ui.set_page(1);
@@ -293,6 +311,65 @@ impl Shared {
         if !self.busy.get() {
             let _ = slint::quit_event_loop();
         }
+    }
+}
+
+/// 「更改」：选一个文件夹装蒜鸟
+fn change_folder(shared: &Rc<Shared>) {
+    if shared.busy.get() {
+        return;
+    }
+    // 从现在要装到的文件夹的上一层开始（选的是「装到哪里面」，SuanNIAO 文件夹自己会建）
+    let dir = shared.job.borrow().dir.clone();
+    let start = dir.parent().map_or(dir.clone(), Path::to_path_buf);
+    win::file_dialog(win::FileDialog::Folder(start, "把蒜鸟装到哪个文件夹"), |picked| {
+        if let Some(picked) = picked {
+            with_setup(|s| s.folder_picked(Path::new(&picked)));
+        }
+    });
+}
+
+impl Shared {
+    fn folder_picked(&self, picked: &Path) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let dir = install_dir_in(picked);
+        if let Err(e) = check_folder(&dir) {
+            ui.set_folder_error(e.into());
+            return;
+        }
+        let moving = self.movable && !same_place(&dir, &self.original);
+        let mut job = self.job.borrow_mut();
+        job.old_dir = moving.then(|| self.original.clone());
+        job.dir = dir;
+        ui.set_folder(job.dir.display().to_string().into());
+        ui.set_folder_error("".into());
+        ui.set_moving(moving);
+    }
+}
+
+/// 选的文件夹 → 装到哪：选的就叫 SuanNIAO、或者里面已经有蒜鸟就直接装进去，不然在里面建一个 SuanNIAO
+/// （选了 D:\ 或者「下载」，别把程序文件直接撒在里面）
+fn install_dir_in(picked: &Path) -> PathBuf {
+    let named = picked.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("SuanNIAO"));
+    if named || picked.join("SuanNIAO.exe").exists() {
+        picked.to_path_buf()
+    } else {
+        picked.join("SuanNIAO")
+    }
+}
+
+/// 能不能装进这个文件夹：不用管理员权限能写进去（Program Files、Windows 这些不行）
+fn check_folder(dir: &Path) -> Result<(), String> {
+    let Some(existing) = dir.ancestors().find(|p| p.is_dir()) else {
+        return Err(format!("找不到 {}，换一个文件夹", dir.display()));
+    };
+    let probe = existing.join(format!(".suanniao-setup-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => Err("这个文件夹要管理员权限才能写，换一个（比如 D 盘下面的）".into()),
     }
 }
 
@@ -404,7 +481,10 @@ impl Job {
     fn install(&self, report: &dyn Fn(f32, &str)) -> Result<(), String> {
         let dir = &self.dir;
         report(0.05, "正在关掉开着的蒜鸟…");
-        let core_was_running = win::quit_running_in(dir);
+        let mut core_was_running = win::quit_running_in(dir);
+        if let Some(old) = &self.old_dir {
+            core_was_running |= win::quit_running_in(old);
+        }
         report(0.2, "正在准备文件夹…");
         std::fs::create_dir_all(dir).map_err(|e| format!("建不了文件夹 {}：{e}", dir.display()))?;
         remove_leftovers(dir);
@@ -424,6 +504,10 @@ impl Job {
         if self.mode == Mode::Install || registered.as_deref().is_some_and(|r| same_place(r, dir)) {
             report(0.9, "正在系统里登记…");
             self.register()?;
+        }
+        if let Some(old) = &self.old_dir {
+            report(0.95, "正在删掉原来位置上的蒜鸟…");
+            self.remove_old(old);
         }
         if core_was_running && self.places.sandbox.is_none() {
             win::start_core_in(dir);
@@ -478,6 +562,26 @@ impl Job {
             let _ = std::fs::remove_file(self.dir.join(name));
         }
         Ok(())
+    }
+
+    /// 搬家以后删掉原来那份：只删蒜鸟自己的文件，文件夹空了才删；桌面快捷方式、开机自启改指新位置
+    fn remove_old(&self, old: &Path) {
+        for name in FILES.iter().copied().chain(["unins000.exe", "unins000.dat", "unins000.msg"]) {
+            let path = old.join(name);
+            if path.exists() {
+                remove_file_retry(&path);
+            }
+        }
+        remove_leftovers(old);
+        let _ = std::fs::remove_dir(old);
+        let desktop = self.places.desktop.join(LINK_NAME);
+        if points_into(&desktop, old) {
+            let _ = std::fs::remove_file(&desktop);
+        }
+        let marker = format!("{}\\", old.display()).to_lowercase();
+        if get_string(&self.places.run_key, RUN_VALUE).is_some_and(|value| value.to_lowercase().contains(&marker)) {
+            let _ = set_string(&self.places.run_key, RUN_VALUE, &format!("\"{}\"", self.dir.join("SuanNIAO-core.exe").display()));
+        }
     }
 
     fn uninstall(&self, report: &dyn Fn(f32, &str)) -> Result<(), String> {
@@ -728,6 +832,13 @@ mod tests {
         assert!(o.mode == Mode::Update && o.dir.as_deref() == Some(Path::new("C:\\x y")) && !o.desktop && !o.silent);
         let o = Options::parse(&args(&["SuanNIAO.exe", "--uninstall", "--silent", "--update"]));
         assert!(o.mode == Mode::Uninstall && o.silent && !o.remove_data);
+    }
+
+    #[test]
+    fn install_dir() {
+        assert_eq!(install_dir_in(Path::new("D:\\")), Path::new("D:\\SuanNIAO"));
+        assert_eq!(install_dir_in(Path::new("D:\\Apps")), Path::new("D:\\Apps\\SuanNIAO"));
+        assert_eq!(install_dir_in(Path::new("D:\\Apps\\suanniao")), Path::new("D:\\Apps\\suanniao"));
     }
 
     #[test]

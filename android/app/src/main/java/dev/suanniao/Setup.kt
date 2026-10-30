@@ -106,20 +106,20 @@ class Setup(private val host: Host, private val overlays: Overlays) {
         lateinit var sheet: Overlays.Sheet
         // 局域网扫码不用蓝牙：没权限、蓝牙没开、手机没蓝牙时也要能点到
         fun Overlays.Sheet.scanRow() {
-            row("扫码走局域网", "不用蓝牙：手机和电脑连着同一个网络，扫电脑上的二维码") {
+            row("扫码走局域网", "不用蓝牙，连同一个网络时用") {
                 sheet.dismiss()
                 host.scanComputer(ScanFor.LAN)
             }
         }
         // 扫码蓝牙配对：不用去蓝牙设置里搜，扫一下、点「配对」
         fun Overlays.Sheet.btScanRow() {
-            row("扫码配对新电脑", "扫电脑蒜鸟上的二维码，手机上点一下「配对」") {
+            row("扫码配对新电脑", "扫码，再点一下「配对」") {
                 sheet.dismiss()
                 host.scanComputer(ScanFor.BT)
             }
         }
         sheet = overlays.sheet build@{
-            header("选择电脑", "列的是和这部手机配对过的电脑")
+            header("选择电脑", "配对过的电脑")
             if (!host.hasBluetoothPermission()) {
                 row("允许「附近的设备」权限", "用蓝牙连电脑要这个权限") {
                     sheet.dismiss()
@@ -146,7 +146,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
             val list = (if (showAll) bonded else bonded.filter(::isComputer))
                 .sortedWith(compareByDescending<BluetoothDevice> { it.address == current }.thenBy { it.name ?: "" })
             if (list.isEmpty()) {
-                row(if (showAll) "还没有配对过的设备" else "没找到配对过的电脑", "扫码配对，或者去蓝牙设置里配对", enabled = false, trailing = null, onClick = null)
+                row(if (showAll) "还没有配对过的设备" else "没找到配对过的电脑", "扫码配对，或去蓝牙设置配对", enabled = false, trailing = null, onClick = null)
             }
             list.forEach { d ->
                 val name = d.name ?: "没有名字的设备"

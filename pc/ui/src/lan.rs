@@ -177,9 +177,9 @@ impl LanUi {
         if !lan.just_paired.is_empty() && lan.just_paired_at >= open_at {
             self.close(ui);
             return Some(if lan.just_paired_via == "bt" {
-                format!("已用蓝牙配对「{}」，以后打开蒜鸟就会自动连上", lan.just_paired)
+                format!("已用蓝牙配对「{}」，以后会自动连上", lan.just_paired)
             } else {
-                format!("已绑定「{}」，以后在同一个网络里会自动连上", lan.just_paired)
+                format!("已绑定「{}」，同一个网络里会自动连上", lan.just_paired)
             });
         }
         // 后台刚启动、没收到这次的指令（或者没处理）：过 3 秒再说一次；开着就每 30 秒重写一次，后台知道界面还开着
@@ -213,11 +213,11 @@ impl LanUi {
                 ui.set_lan_qr_note(
                     if bt {
                         format!(
-                            "蓝牙：手机扫完会弹「配对」，点一下就好，电脑这边自动同意。局域网：手机要和电脑连着同一个网络。二维码 {left} 分钟内有效（开着会自动换新的）。"
+                            "蓝牙：手机上点「配对」就好，电脑自动同意。局域网：两边要连同一个网络。{left} 分钟内有效，会自动换新的。"
                         )
                     } else {
                         format!(
-                            "手机要和电脑连着同一个网络。二维码只能用一次，{left} 分钟内有效（开着会自动换新的）。连不上的话，看看电脑的防火墙有没有拦住蒜鸟，或者 Wi-Fi 是不是开了「设备隔离」（访客网络常这样）。"
+                            "两边要连同一个网络。二维码只能用一次，{left} 分钟内有效。连不上：看看防火墙，或 Wi-Fi 是否开了「设备隔离」（访客网络常这样）。"
                         )
                     }
                     .into(),
@@ -230,7 +230,7 @@ impl LanUi {
                     ui.set_lan_qr_note(lan.error.as_str().into());
                 } else if lan.listening && lan.addrs.is_empty() {
                     ui.set_lan_addr_text("".into());
-                    ui.set_lan_qr_note("这台电脑现在没连网（没找到有线或无线网络），连上网络以后二维码会自动出来。".into());
+                    ui.set_lan_qr_note("这台电脑没连网，连上后二维码会自动出来。".into());
                 }
             }
         }

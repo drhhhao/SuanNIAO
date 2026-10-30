@@ -1,9 +1,14 @@
 //! 蒜鸟电脑端检查新版本。
 //!
 //! 每次发版，GitHub 的 Release 里都带一个 latest.json（`release.yml` 生成），写着两端的新版本号、
-//! 安装包的下载地址、大小和 SHA-256；`MANIFEST_URL` 总是指向最新一次发布里的那份。
-//! 后台定时读它，有新版本就在托盘提示；主界面弹窗问要不要更新，用户点了「立即更新」才下载安装包、
-//! 核对指纹、运行安装包。
+//! 安装包的下载地址、大小和 SHA-256，还有发版时用私钥给它签的名 latest.json.sig；
+//! 发完再同步一份到 Gitee（国内连 GitHub 慢，`.github/gitee-sync.py`）。
+//! 后台定时读它（先读 Gitee 的，读不到再读 GitHub 的），有新版本就在托盘提示；主界面弹窗问要不要更新，
+//! 用户点了「立即更新」才下载安装包（先从 Gitee 下，不行再从 GitHub 下）、核对指纹、运行安装包。
+//!
+//! 只认签名对得上的 latest.json（公钥 `UPDATE_PUBLIC_KEY` 内置在这里，私钥只在发版用的 GitHub 加密变量里）：
+//! Gitee 上的那份没签名、签名不对都不用；GitHub 上旧的发布没有签名，从 GitHub 读的没签名时照旧认（https 连的就是 GitHub）。
+//! 安装包按 latest.json 里的大小和 SHA-256 核对，所以从哪下载都一样可靠。
 //!
 //! 读到的结果和用户的选择（跳过这个版本、以后再说、自动检查开关）记在 `%APPDATA%\SuanNIAO\update.json`，
 //! 后台和主界面都读写这个文件。
@@ -25,6 +30,18 @@ use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingl
 
 /// 最新一次发布里的 latest.json（GitHub 会跳转到真正的下载地址）
 pub const MANIFEST_URL: &str = "https://github.com/drhhhao/SuanNIAO/releases/latest/download/latest.json";
+
+/// Gitee 上最新一版的 latest.json（Gitee 的 latest 指最新建的发行版；国内快，先读这个）
+pub const GITEE_MANIFEST_URL: &str = "https://gitee.com/drhhhao_0/SuanNIAO/releases/download/latest/latest.json";
+
+/// latest.json 里的 mirror（Gitee 上这一版的下载地址）只认这个开头的
+const MIRROR_PREFIX: &str = "https://gitee.com/drhhhao_0/SuanNIAO/releases/download/";
+
+/// 给 latest.json 签名的 Ed25519 公钥（私钥在 GitHub 加密变量 SUANNIAO_UPDATE_KEY 里，原件和发版密钥放在一起）
+const UPDATE_PUBLIC_KEY: [u8; 32] = [
+    0xd7, 0xeb, 0x6b, 0xa0, 0x0c, 0xf2, 0x68, 0x16, 0xe5, 0xe0, 0x84, 0x19, 0x29, 0x18, 0x95, 0xe9, 0xf7, 0xc1, 0x0a, 0x22, 0x0b,
+    0xdc, 0xfd, 0x7a, 0x3d, 0x85, 0x32, 0x73, 0x50, 0x80, 0xc9, 0xe9,
+];
 
 /// 最新一次发布的网页（latest.json 里没写发布页时，「去网页下载」打开这个）
 pub const RELEASES_PAGE: &str = "https://github.com/drhhhao/SuanNIAO/releases/latest";
@@ -51,6 +68,8 @@ pub struct Manifest {
     pub notes: Vec<String>,
     pub pc: Asset,
     pub android: Asset,
+    /// Gitee 上这一版的下载地址（以 / 结尾，后面接文件名；没同步过去就是空的）
+    pub mirror: String,
 }
 
 impl Manifest {
@@ -204,22 +223,55 @@ fn test_url() -> Option<String> {
     std::env::var(URL_ENV).ok().filter(|url| !url.trim().is_empty())
 }
 
+/// 先读 Gitee 的（一定要有对得上的签名），读不到再读 GitHub 的；都没读到时说 GitHub 那边的原因
 fn fetch_manifest() -> Result<Manifest, String> {
-    let url = test_url().unwrap_or_else(|| MANIFEST_URL.into());
-    let mut response = Response::get(&url, true)?;
-    match response.status {
-        200 => {}
-        404 => return Err("发布页上还没有版本信息".into()),
-        status => return Err(format!("服务器返回 {status}")),
+    if let Some(url) = test_url() {
+        return fetch_from(&url, false);
     }
-    let body = response.read_to_end(1 << 20)?;
-    let manifest: Manifest = serde_json::from_slice(&body).map_err(|_| "版本信息看不懂".to_string())?;
+    fetch_from(GITEE_MANIFEST_URL, true).or_else(|_| fetch_from(MANIFEST_URL, false))
+}
+
+/// 读一份 latest.json 和它的签名（同一个地址后面加 .sig）。need_signature：没有签名就不认
+fn fetch_from(url: &str, need_signature: bool) -> Result<Manifest, String> {
+    let body = match get_small(url)? {
+        (200, body) => body,
+        (404, _) => return Err("发布页上还没有版本信息".into()),
+        (status, _) => return Err(format!("服务器返回 {status}")),
+    };
+    match get_small(&format!("{url}.sig"))? {
+        (200, signature) => {
+            if !signed(&UPDATE_PUBLIC_KEY, &body, &signature) {
+                return Err("版本信息的签名对不上，没用它".into());
+            }
+        }
+        (404, _) if !need_signature => {}
+        (status, _) => return Err(format!("读不到版本信息的签名（服务器返回 {status}）")),
+    }
+    let mut manifest: Manifest = serde_json::from_slice(&body).map_err(|_| "版本信息看不懂".to_string())?;
     // 只认 https 的下载地址；测试时换了地址才认本机的 http
-    let url_ok = |url: &str| url.starts_with("https://") || (test_url().is_some() && url.starts_with("http://"));
+    let test = test_url().is_some();
+    let url_ok = |url: &str| url.starts_with("https://") || (test && url.starts_with("http://"));
     if manifest.pc.version.trim().is_empty() || !url_ok(&manifest.pc.url) || manifest.pc.sha256.trim().len() != 64 {
         return Err("版本信息不完整".into());
     }
+    let mirror_ok = manifest.mirror.starts_with(MIRROR_PREFIX) || (test && url_ok(&manifest.mirror));
+    if !mirror_ok || !manifest.mirror.ends_with('/') {
+        manifest.mirror.clear();
+    }
     Ok(manifest)
+}
+
+/// GET 一个小文件（版本信息、签名，最多 1 MB），返回状态码和内容
+fn get_small(url: &str) -> Result<(u32, Vec<u8>), String> {
+    let mut response = Response::get(url, true)?;
+    let status = response.status;
+    let body = if status == 200 { response.read_to_end(1 << 20)? } else { Vec::new() };
+    Ok((status, body))
+}
+
+/// signature 是 key 对 message 的 Ed25519 签名
+fn signed(key: &[u8; 32], message: &[u8], signature: &[u8]) -> bool {
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key).verify(message, signature).is_ok()
 }
 
 /// 下载的安装包放在哪个文件夹：临时文件夹里的 SuanNIAO-update（装完就没用了，主界面过一会儿删掉）
@@ -234,8 +286,9 @@ pub fn installer_path(asset: &Asset) -> PathBuf {
 }
 
 /// 下载安装包到 dest：先写到 .part，大小和 SHA-256 都对上了才改成 dest；dest 已经是下好的同一个文件就不再下。
+/// mirror 不是空的就先从那里（Gitee）下，没下成、对不上再从 asset.url（GitHub）下。
 /// progress(已下载, 总共) 在调用的线程上调；cancel 变成 true 就停下，返回 CANCELLED
-pub fn download(asset: &Asset, dest: &Path, cancel: &AtomicBool, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
+pub fn download(asset: &Asset, mirror: &str, dest: &Path, cancel: &AtomicBool, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
     if sha256_file(dest).is_some_and(|hash| hash.eq_ignore_ascii_case(asset.sha256.trim())) {
         progress(asset.size, asset.size);
         return Ok(());
@@ -244,16 +297,27 @@ pub fn download(asset: &Asset, dest: &Path, cancel: &AtomicBool, mut progress: i
         std::fs::create_dir_all(dir).map_err(|e| format!("建不了下载文件夹：{e}"))?;
     }
     let part = dest.with_extension("part");
-    let result = fetch_to(asset, &part, cancel, &mut progress)
-        .and_then(|()| std::fs::rename(&part, dest).map_err(|e| format!("存不了下载的文件：{e}")));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&part);
+    let mut sources = Vec::new();
+    if !mirror.is_empty() && !asset.file.is_empty() {
+        sources.push(format!("{mirror}{}", asset.file));
+    }
+    sources.push(asset.url.clone());
+    let mut result = Err(String::new());
+    for url in &sources {
+        result = fetch_to(url, asset, &part, cancel, &mut progress)
+            .and_then(|()| std::fs::rename(&part, dest).map_err(|e| format!("存不了下载的文件：{e}")));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        if result.is_ok() || result.as_ref().is_err_and(|e| e == CANCELLED) {
+            break;
+        }
     }
     result
 }
 
-fn fetch_to(asset: &Asset, part: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
-    let mut response = Response::get(&asset.url, false)?;
+fn fetch_to(url: &str, asset: &Asset, part: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
+    let mut response = Response::get(url, false)?;
     if response.status != 200 {
         return Err(format!("服务器返回 {}", response.status));
     }
@@ -476,9 +540,9 @@ fn net_error(e: windows::core::Error) -> String {
 /// WinHTTP 的错误码说成人话
 fn describe(code: u32) -> String {
     match code {
-        12002 => "连接超时，网络不好或者连不上 GitHub".into(),
+        12002 => "连接超时，网络不好或者连不上下载的服务器".into(),
         12007 => "找不到服务器，网络没连上？".into(),
-        12029 => "连不上服务器，网络不好或者连不上 GitHub".into(),
+        12029 => "连不上服务器，网络不好或者被拦住了".into(),
         12030 | 12152 => "和服务器的连接断了".into(),
         12175 => "安全连接没建起来（证书不对，可能被代理拦了）".into(),
         _ => format!("网络出错（{code}）"),
@@ -518,6 +582,21 @@ mod tests {
         let mut hash = Sha256::new().unwrap();
         hash.update(b"abc");
         assert_eq!(hash.finish(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn ed25519() {
+        // RFC 8032 第 7.1 节的第一组：空消息
+        let key: [u8; 32] = hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a").try_into().unwrap();
+        let sig = hex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+        assert!(signed(&key, b"", &sig));
+        assert!(!signed(&key, b"x", &sig));
+        assert!(!signed(&UPDATE_PUBLIC_KEY, b"", &sig));
+        assert!(!signed(&key, b"", &sig[..63]));
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
     }
 
     #[test]

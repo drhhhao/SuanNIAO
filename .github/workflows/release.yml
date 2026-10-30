@@ -1,7 +1,9 @@
 # 发版：推送到 main 以后，如果「电脑端版本 + 手机端版本」这一对还没发布过，就在 GitHub 的机器上
 # 编译两端、打包，发一个 Release；版本号没变就什么都不做。所以发新版 = 改版本号 + 推送。
-# Release 里还有一个 latest.json（两端的版本号、下载地址、大小、SHA-256、更新说明）：
+# 手机端每一版有两个：完整安装包（带语音模型，第一次装用）和不带模型的更新包（-update.apk，App 里更新用）。
+# Release 里还有一个 latest.json（两端的版本号、下载地址、大小、SHA-256、更新说明）和它的签名 latest.json.sig：
 # 两端的蒜鸟读 releases/latest/download/latest.json 看有没有新版本（pc/update、android Updater.kt）。
+# 发完再同步一份到 Gitee（国内快，两端先找那边；见 .github/gitee-sync.py）。
 # 也可以在仓库网页的 Actions → 发版 → Run workflow 手动跑一遍（同样只在版本号是新的时候发）。
 name: 发版
 
@@ -127,6 +129,26 @@ jobs:
           if [ ! -f "$apk" ]; then echo "::error::没生成签过名的 app-release.apk"; ls -R android/app/build/outputs/apk; exit 1; fi
           if [ "$(unzip -l "$apk" | grep -c 'assets/models/x-asr-480ms/')" != 4 ]; then echo "::error::安装包里没带齐语音模型"; unzip -l "$apk" | grep assets/; exit 1; fi
           cp "$apk" "SuanNIAO-Android-$VER.apk"
+      # 同一版再打一个不带语音模型的「更新包」（三十 MB 左右）：已经装着蒜鸟的手机在 App 里更新时只下它，
+      # 装之前蒜鸟把模型从现在的安装包里拷到手机存储（见 android/app/build.gradle.kts 的 noModel、Updater.kt）
+      - name: 编译更新包（不带语音模型）
+        working-directory: android
+        env:
+          SUANNIAO_KEYSTORE_PASSWORD: ${{ secrets.SUANNIAO_KEYSTORE_PASSWORD }}
+          SUANNIAO_KEY_ALIAS: suanniao
+        # 先删掉上一步打的完整安装包：打包是增量的，留着它的话，删掉的模型会在新文件里留成一百多 MB 的空洞
+        run: |
+          rm -f app/build/outputs/apk/release/app-release.apk
+          ./gradlew assembleRelease -PnoModel --no-daemon
+      - name: 改名（更新包）
+        env:
+          VER: ${{ needs.check.outputs.phone }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          if [ "$(unzip -l "$apk" | grep -c 'assets/models/')" != 0 ]; then echo "::error::更新包里不该有语音模型"; unzip -l "$apk" | grep assets/; exit 1; fi
+          if [ "$(stat -c %s "$apk")" -gt $((80 * 1024 * 1024)) ]; then echo "::error::更新包超过 80 MB，不对劲（Gitee 附件最多 100 MB）"; ls -l "$apk"; exit 1; fi
+          cp "$apk" "SuanNIAO-Android-$VER-update.apk"
+          ls -l SuanNIAO-Android-*.apk
       - uses: actions/upload-artifact@v7
         with:
           name: android
@@ -150,7 +172,10 @@ jobs:
           PC: ${{ needs.check.outputs.pc }}
           PHONE: ${{ needs.check.outputs.phone }}
           TAG: ${{ needs.check.outputs.tag }}
+          GITEE_REPO: drhhhao_0/SuanNIAO
+          UPDATE_KEY: ${{ secrets.SUANNIAO_UPDATE_KEY }}
         run: |
+          if [ -z "$UPDATE_KEY" ]; then echo "::error::仓库的加密变量里没有 SUANNIAO_UPDATE_KEY（更新签名私钥）"; exit 1; fi
           prev=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
           # CHANGELOG.md 里从这一版往下、到上一次发布的那一版为止的几段：中间没发布过的版本（比如本机部署过的）一起算进来。
           # 每段的标题改成「#### 电脑端 X · 手机端 Y」；只有一段时不要标题
@@ -166,7 +191,7 @@ jobs:
           # 「两端一起…」下面的和没写哪一端的两端都算（每段重新算）
           python3 - <<'PY'
           import datetime, hashlib, json, os, re
-          pc, phone, tag, repo = (os.environ[k] for k in ("PC", "PHONE", "TAG", "GH_REPO"))
+          pc, phone, tag, repo, gitee = (os.environ[k] for k in ("PC", "PHONE", "TAG", "GH_REPO", "GITEE_REPO"))
           gradle = open("android/app/build.gradle.kts", encoding="utf-8").read()
           code = int(re.search(r"versionCode\s*=\s*(\d+)", gradle).group(1))
           notes = {"all": [], "pc": [], "android": []}
@@ -186,6 +211,7 @@ jobs:
                   notes["all"].append(text)
                   for side in sides:
                       notes[side].append(text)
+          import zipfile
           def asset(name, version, **extra):
               data = open(f"dist/{name}", "rb").read()
               url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
@@ -196,33 +222,85 @@ jobs:
               page=f"https://github.com/{repo}/releases/tag/{tag}", notes=notes["all"],
               pc=asset(f"SuanNIAO-PC-{pc}-Setup.exe", pc, notes=notes["pc"]),
               android=asset(f"SuanNIAO-Android-{phone}.apk", phone, code=code, notes=notes["android"]),
+              # Gitee 上同一版的下载地址（同名文件；手机安装包超过 Gitee 附件的 100 MB 上限，拆成 90 MB 一份的 parts）
+              mirror=f"https://gitee.com/{gitee}/releases/download/{tag}/",
           )
+          # 不带模型的更新包：要手机上先有的模型（名字 = 完整安装包里 assets/models/ 下的目录名，大小 = 几个文件加起来）。
+          # 换了模型、目录名跟着换，手机上没有这个名字的模型就会自己改下完整安装包
+          with zipfile.ZipFile(f"dist/SuanNIAO-Android-{phone}.apk") as z:
+              model_files = [i for i in z.infolist() if i.filename.startswith("assets/models/") and not i.is_dir()]
+          model_names = {i.filename.split("/")[2] for i in model_files}
+          if len(model_names) != 1:
+              raise SystemExit(f"完整安装包里的语音模型不是正好一个：{model_names}")
+          model = dict(name=model_names.pop(), size=sum(i.file_size for i in model_files))
+          lite = asset(f"SuanNIAO-Android-{phone}-update.apk", phone, model=model)
+          del lite["version"]
+          manifest["android"]["lite"] = lite
+          chunk = 90 * 1024 * 1024
+          size, name = manifest["android"]["size"], manifest["android"]["file"]
+          manifest["android"]["parts"] = [dict(file=f"{name}.{i + 1}", size=min(chunk, size - start))
+                                          for i, start in enumerate(range(0, size, chunk))]
           with open("dist/latest.json", "w", encoding="utf-8") as f:
               json.dump(manifest, f, ensure_ascii=False, indent=2)
           PY
           cat dist/latest.json
+          # 签名：电脑端内置公钥，只认签名对得上的 latest.json（不管从 GitHub 还是 Gitee 读的）
+          printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/update.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/update.pem" -rawin -in dist/latest.json -out dist/latest.json.sig
+          rm "$RUNNER_TEMP/update.pem"
+          if [ "$(wc -c < dist/latest.json.sig)" != 64 ]; then echo "::error::latest.json 没签上名"; exit 1; fi
           # 文件名只能用英文（GitHub 会把中文文件名改掉，两端检查更新也认这几个名字），
           # 所以开头放两个写明「电脑版」「手机版」的下载链接，文件列表里也给每个文件加中文显示名（下面的 #标签）
           pc_file="SuanNIAO-PC-$PC-Setup.exe"
           phone_file="SuanNIAO-Android-$PHONE.apk"
+          lite_file="SuanNIAO-Android-$PHONE-update.apk"
+          full_mb=$(( ($(stat -c %s "dist/$phone_file") + 524288) / 1048576 ))
+          lite_mb=$(( ($(stat -c %s "dist/$lite_file") + 524288) / 1048576 ))
           dl="https://github.com/$GH_REPO/releases/download/$TAG"
           {
             echo "## 下载"
             echo
             echo "- **电脑**（Windows 10 / 11）：[点这里下载电脑版安装包]($dl/$pc_file)（\`$pc_file\`）"
-            echo "- **手机**（安卓）：[点这里下载手机版安装包]($dl/$phone_file)（\`$phone_file\`）"
+            echo "- **手机**（安卓）：[点这里下载手机版安装包]($dl/$phone_file)（\`$phone_file\`，约 $full_mb MB）"
             echo
             echo "电脑和手机都要装。最下面的「Source code」是源代码，不用下。"
             echo
             echo "**电脑版**：双击安装，不用管理员权限，装好后开始菜单里有「蒜鸟」。"
             echo "Windows 提示「Windows 已保护你的电脑」时，点「更多信息」→「仍要运行」。装好以后有新版本时蒜鸟会自己提示，点「立即更新」就行，设置都会留着。"
             echo
-            echo "**手机版**：在手机上打开安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用。以后有新版本时手机上的蒜鸟也会提示。"
+            echo "**手机版**：在手机上打开安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用。"
+            echo
+            echo "**手机该下哪个**"
+            echo
+            echo "- **第一次装**（或者卸载过、要重装）：下上面的手机版安装包 \`$phone_file\`（完整版，约 $full_mb MB，带语音模型）。"
+            echo "- **已经装着蒜鸟**：不用来这里下。手机上的蒜鸟会提示有新版本，点「立即更新」，自动只下约 $lite_mb MB 的更新包，语音模型留在手机上，不用再下。"
+            echo "- 文件列表里的 \`$lite_file\` 就是这个更新包，给 App 里自动更新用：**不带语音模型，第一次装别下它**（装上以后本地语音识别用不了）。"
+            echo "- 换了语音模型的版本，更新说明里会写明；那一次蒜鸟会自动下完整安装包，不用另外操作。"
             echo
             if [ -n "$prev" ]; then echo "### 和上一版（$prev）比改了什么"; else echo "### 这一版有什么"; fi
             cat changes.md
           } > notes.md
           gh release create "$TAG" --target "$GITHUB_SHA" --title "蒜鸟 电脑端 $PC · 手机端 $PHONE" --notes-file notes.md \
             "dist/$pc_file#电脑版安装包（Windows 10 / 11）· $pc_file" \
-            "dist/$phone_file#手机版安装包（安卓）· $phone_file" \
-            "dist/latest.json#latest.json（自动更新用，不用下载）"
+            "dist/$phone_file#手机版安装包（安卓，完整版，第一次装下这个）· $phone_file" \
+            "dist/$lite_file#手机版更新包（App 里自动更新用，不带语音模型，第一次装别下）· $lite_file" \
+            "dist/latest.json#latest.json（自动更新用，不用下载）" \
+            "dist/latest.json.sig#latest.json.sig（自动更新用，不用下载）"
+
+  gitee:
+    name: 同步到 Gitee
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # 刚发布的这一版原样下回来，传到 Gitee（见 .github/gitee-sync.py）。没传成两端照样从 GitHub 更新
+      - name: 同步
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.check.outputs.tag }}
+          GITEE_REPO: drhhhao_0/SuanNIAO
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          gh release download "$TAG" --dir dist
+          python3 .github/gitee-sync.py

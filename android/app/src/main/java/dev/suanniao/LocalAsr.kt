@@ -30,7 +30,8 @@ import kotlin.math.log10
  * 一个目录一个模型：tokens.txt 加 encoder / decoder / joiner 三个 .onnx，目录名就是模型的名字。
  * 正式版的安装包里带着 x-asr-480ms（assets 的 models/ 下，直接从安装包里读，不用先解压出来）；
  * 用 adb 推到 /sdcard/Android/data/dev.suanniao/files/models/<名字>/ 下的也能用（比如 960ms 那档），
- * 和安装包里的同名时用安装包里的。
+ * 和安装包里的同名时用安装包里的。在 App 里更新时下的是不带模型的更新包：装之前把安装包里的模型拷到这里（copyBundled），
+ * 新版从这里读；以后又装回完整安装包，这份就多余了，打开时删掉（dropCopiesOfBundled）。
  *
  * 一次按住（或锁定）从头到尾只用一个识别流、中途不重置：句子之间的「。」要等听到下一句开头才出，
  * 重置会把它丢掉；正好在重置那一刻说的字也会被切坏。实测这样识别出的文字只会往后追加，可以边说边打。
@@ -88,9 +89,68 @@ object LocalAsr {
             .filter { name -> files(am.list("$BUNDLED/$name").orEmpty().toList(), "$BUNDLED/$name") != null }
             .map { Model(it, asset = "$BUNDLED/$it") }
         val local = modelsRoot(context).listFiles().orEmpty()
-            .filter { dir -> dir.isDirectory && bundled.none { it.name == dir.name } && files(dir.list().orEmpty().toList(), dir.path) != null }
+            .filter { dir -> dir.isDirectory && !dir.name.startsWith(".") && bundled.none { it.name == dir.name } && files(dir.list().orEmpty().toList(), dir.path) != null }
             .map { Model(it.name, dir = it) }
         return (bundled + local).sortedBy { it.name }
+    }
+
+    /** 安装包里带着这个名字的模型（文件齐全） */
+    fun isBundled(context: Context, name: String): Boolean {
+        val am = context.applicationContext.assets
+        return files(am.list("$BUNDLED/$name").orEmpty().toList(), "$BUNDLED/$name") != null
+    }
+
+    /** 手机存储里有这个模型的完整一份：文件齐全，加起来正好 size 字节 */
+    fun hasLocal(context: Context, name: String, size: Long): Boolean {
+        val dir = File(modelsRoot(context), name)
+        val list = dir.listFiles()?.filter { it.isFile } ?: return false
+        return files(list.map { it.name }, dir.path) != null && list.sumOf { it.length() } == size
+    }
+
+    /**
+     * 更新成不带模型的「更新包」之前：把安装包里带的模型拷到手机存储，新版从那里读（见 build.gradle.kts 的 noModel）。
+     * 先拷到 models/.<名字>.tmp，加起来正好 size 字节才改名，拷一半断了不会被当成模型。已经有完整的一份就不再拷。
+     * 要一两秒，在后台线程调。成了返回 true
+     */
+    fun copyBundled(context: Context, name: String, size: Long): Boolean {
+        if (hasLocal(context, name, size)) return true
+        val am = context.applicationContext.assets
+        val names = am.list("$BUNDLED/$name").orEmpty()
+        if (names.isEmpty() || context.getExternalFilesDir(null) == null) return false
+        val root = modelsRoot(context)
+        val tmp = File(root, ".$name.tmp")
+        return try {
+            tmp.deleteRecursively()
+            if (!tmp.mkdirs()) return false
+            var total = 0L
+            for (n in names) {
+                am.open("$BUNDLED/$name/$n").use { input -> File(tmp, n).outputStream().use { total += input.copyTo(it, 256 * 1024) } }
+            }
+            val dir = File(root, name)
+            if (total != size || !dir.deleteRecursively() || !tmp.renameTo(dir)) {
+                tmp.deleteRecursively()
+                return false
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(LinkService.TAG, "拷不出安装包里的模型 $name", e)
+            tmp.deleteRecursively()
+            false
+        }
+    }
+
+    /**
+     * 装的是带模型的完整安装包，手机存储里还有一份同名的（以前为更新拷出来的，现在用不上）：删掉，省一百五十多 MB。
+     * 在后台线程调；keep 里的名字不删（有个更新包正等着装、要用它）
+     */
+    fun dropCopiesOfBundled(context: Context, keep: Set<String>) {
+        val am = context.applicationContext.assets
+        for (name in am.list(BUNDLED).orEmpty()) {
+            if (name in keep || !isBundled(context, name)) continue
+            val dir = File(modelsRoot(context), name)
+            if (dir.isDirectory && dir.deleteRecursively()) Log.i(LinkService.TAG, "删掉了手机存储里多出来的 $name（安装包里有）")
+        }
+        modelsRoot(context).listFiles()?.filter { it.name.startsWith(".") && it.name.endsWith(".tmp") }?.forEach { it.deleteRecursively() }
     }
 
     fun isLoaded(model: Model) = synchronized(lock) { current?.model == model }

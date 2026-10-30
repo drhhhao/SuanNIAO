@@ -4013,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "suanniao-core"
-version = "0.7.20"
+version = "0.7.21"
 dependencies = [
  "base64 0.22.1",
  "embed-resource",
@@ -4050,7 +4050,7 @@ dependencies = [
 
 [[package]]
 name = "suanniao-ui"
-version = "0.7.20"
+version = "0.7.21"
 dependencies = [
  "embed-resource",
  "qrcode",
@@ -4067,6 +4067,7 @@ dependencies = [
 name = "suanniao-update"
 version = "0.1.0"
 dependencies = [
+ "ring",
  "serde",
  "serde_json",
  "suanniao-config",

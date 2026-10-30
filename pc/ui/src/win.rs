@@ -687,8 +687,8 @@ pub enum FileDialog {
     RemoteMapping,
     Backup,
     SaveJson(String),
-    /// 选文件夹（从这个文件夹开始）
-    Folder(PathBuf),
+    /// 选文件夹（从这个文件夹开始，对话框标题）
+    Folder(PathBuf, &'static str),
 }
 
 /// 在单独的线程里开文件对话框，选完（或取消）以后在界面线程里调 done。
@@ -706,14 +706,14 @@ pub fn file_dialog(kind: FileDialog, done: impl FnOnce(Option<String>) + Send + 
             FileDialog::RemoteMapping => open_dialog(owner, "遥控器映射文件 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0\0", false),
             FileDialog::Backup => open_dialog(owner, "蒜鸟备份 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0\0", false),
             FileDialog::SaveJson(name) => save_json(owner, &name),
-            FileDialog::Folder(start) => pick_folder(owner, &start),
+            FileDialog::Folder(start, title) => pick_folder(owner, &start, title),
         };
         let _ = slint::invoke_from_event_loop(move || done(result));
     });
 }
 
 /// 选文件夹的对话框（系统的新式对话框）
-fn pick_folder(owner: HWND, start: &Path) -> Option<String> {
+fn pick_folder(owner: HWND, start: &Path, title: &str) -> Option<String> {
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
         FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
@@ -723,7 +723,7 @@ fn pick_folder(owner: HWND, start: &Path) -> Option<String> {
         let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let options = dialog.GetOptions().ok()?;
         dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).ok()?;
-        let _ = dialog.SetTitle(w!("手机发来的文件存到哪个文件夹"));
+        let _ = dialog.SetTitle(&HSTRING::from(title));
         // 文件夹还没建（第一次用）时从它的上一层开始
         let existing = start.ancestors().find(|p| p.is_dir());
         if let Some(dir) = existing {

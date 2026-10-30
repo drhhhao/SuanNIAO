@@ -1788,7 +1788,7 @@ component LanCheck inherits HorizontalLayout {
         horizontal-stretch: 1;
         state: root.up ? 1 : -1;
         title: root.phones.length == 0 ? "局域网（可选）" : "局域网：已绑定 " + root.phones[0].name + (root.phones.length > 1 ? " 等 " + root.phones.length + " 部" : "");
-        note: root.phones.length == 0 ? "也可以用局域网：设置 → 扫码连接 → 显示二维码" : root.up ? "在线，正在连上…" : "不在线：两边连同一个网络、打开蒜鸟就会自动连上";
+        note: root.phones.length == 0 ? "在「设置 → 扫码连接」里绑定" : root.up ? "在线，正在连上…" : "不在线：连同一个网络就会连上";
     }
     if root.phones.length == 0: VerticalLayout {
         alignment: center;
@@ -1902,7 +1902,7 @@ component HomePage inherits Page {
                         font-weight: 600;
                     }
                     Muted {
-                        text: "开了以后不用打开这个窗口，手机也能直接连上。以后可以在「设置」里改。";
+                        text: "开了以后不开这个窗口，手机也能连。在「设置」里能改。";
                     }
                 }
                 VerticalLayout {
@@ -2078,7 +2078,7 @@ component HomePage inherits Page {
                     CheckRow {
                         state: -1;
                         title: "手机上打开蒜鸟";
-                        note: root.uses-lan ? "两边都开着，就会自动连上" : "第一次要扫码配对，或在 App 里选这台电脑";
+                        note: root.uses-lan ? "两边都开着，就会自动连上" : "第一次要扫码配对或选这台电脑";
                     }
                     // 还没用局域网：放最后，提示也可以扫码
                     if !root.uses-lan: LanCheck {
@@ -2124,7 +2124,7 @@ component HomePage inherits Page {
                         padding-top: 6px;
                         spacing: 4px;
                         Muted {
-                            text: "· 电脑：打开蓝牙；没配对的话点「扫码配对」，手机上的蒜鸟扫一下。";
+                            text: "· 电脑：打开蓝牙；没配对就点「扫码配对」让手机扫。";
                         }
                         Muted {
                             text: "· 手机：打开蒜鸟，右上角「···」→「选择电脑」。";
@@ -2796,7 +2796,7 @@ component LayoutPage inherits Page {
                             padding-right: 16px;
                             padding-bottom: 16px;
                             Muted {
-                                text: "点左边的模块来编辑；按住 Alt 拖动可以不对齐格子。";
+                                text: "点左边的模块编辑；按住 Alt 拖可以不对齐格子。";
                                 font-size: 13px;
                             }
                         }
@@ -3446,7 +3446,7 @@ component LanDialog inherits DialogCard {
             font-weight: 700;
         }
         WrapText {
-            text: "在手机上打开蒜鸟，点右上角的三个点，选「扫码连接电脑」，对准下面的二维码。";
+            text: "手机蒜鸟里点右上角「···」→「扫码连接电脑」，扫下面的码。";
             color: Theme.fg2;
             font-size: 13px;
         }
@@ -4934,7 +4934,7 @@ component MappingPage inherits Page {
                     }
                     SettingRow {
                         label: "按住时";
-                        note: (root.hold == 0 ? "按住 " + root.long-press-ms + " 毫秒执行一次「长按」" : root.hold == 1 ? "按住 " + root.long-press-ms + " 毫秒执行「长按」，之后每 " + root.long-repeat-interval-ms + " 毫秒再来一次，松手就停" : root.hold == 2 ? "按下就执行「单击」，按住 " + root.repeat-delay-ms + " 毫秒后每 " + root.repeat-interval-ms + " 毫秒重复，松手就停" : "按下就按住「单击」的键，松手才抬起，像实体键盘") + (root.passthrough-ok ? "" : "。单击正好是一个按键或组合键才能选「直通」");
+                        note: (root.hold == 0 ? "按住 " + root.long-press-ms + " 毫秒算一次「长按」" : root.hold == 1 ? "按住 " + root.long-press-ms + " 毫秒长按，之后每 " + root.long-repeat-interval-ms + " 毫秒一次" : root.hold == 2 ? "按住 " + root.repeat-delay-ms + " 毫秒后每 " + root.repeat-interval-ms + " 毫秒重复「单击」" : "按下就按住，松手才抬起，像实体键盘") + (root.passthrough-ok ? "" : "；直通要单击只有一个键");
                         VerticalLayout {
                             alignment: center;
                             Segmented {
@@ -4974,7 +4974,7 @@ component MappingPage inherits Page {
                                     }
                                 }
                                 Muted {
-                                    text: "按住时是「" + root.current.hold-name + "」，双击、长按不会生效；改成「长按一次」或「重复长按」才行。";
+                                    text: "按住时是「" + root.current.hold-name + "」，双击、长按不生效；要用就改成「长按一次」或「重复长按」。";
                                     color: Theme.warn-fg;
                                     horizontal-stretch: 1;
                                 }
@@ -4986,7 +4986,7 @@ component MappingPage inherits Page {
                         padding-right: 16px;
                         padding-top: 6px;
                         Muted {
-                            text: root.hold == 2 ? "按下就执行，按住一直重复。" : root.hold == 3 ? "按下时按住这个键，松手抬起。" : "按顺序执行，停用的步骤跳过。配了双击时，单击要等一下才执行。";
+                            text: root.hold == 2 ? "按下就执行，按住一直重复。" : root.hold == 3 ? "按下时按住这个键，松手抬起。" : "按顺序执行，跳过停用的步骤。配了双击，单击会稍等再执行。";
                         }
                     }
                     VerticalLayout {
@@ -10088,7 +10088,7 @@ component TutorialDialog inherits Rectangle {
                         icon: @image-url("../icons/phone.svg");
                         tone: 1;
                         title: "手机：装好并打开蒜鸟 App";
-                        note: "安卓手机。第一次打开时，它也会一步步带你连上电脑";
+                        note: "安卓手机，第一次打开会带你连电脑";
                     }
                     TutFeature {
                         icon: @image-url("../icons/app.svg");
@@ -10479,7 +10479,7 @@ component TutorialDialog inherits Rectangle {
                         icon: @image-url("../icons/mic.svg");
                         tone: 2;
                         title: "按住语音键说话";
-                        note: "说的话变成字，打到电脑上光标所在的地方";
+                        note: "说的话变成字，打在电脑光标处";
                     }
                 }
                 TutorialPage {
@@ -12287,6 +12287,10 @@ export component SetupWindow inherits Window {
     // 这个安装包比装着的新（1）、一样（0）、旧（-1）
     in property <int> compare: 1;
     in property <string> folder;
+    // 「更改」选的文件夹装不了（要管理员权限）：说为什么
+    in property <string> folder-error;
+    // 换了文件夹、原来装着的那份会搬过去（装好新的删掉旧的）
+    in property <bool> moving;
     // 设置在哪（卸载时没删设置，告诉用户还留在哪）
     in property <string> data-folder;
     in-out property <bool> desktop: true;
@@ -12301,6 +12305,7 @@ export component SetupWindow inherits Window {
     in property <bool> custom-frame;
     in property <bool> window-active: true;
     callback start-setup();
+    callback change-folder();
     callback launch();
     callback finish();
     callback minimize-window();
@@ -12447,7 +12452,7 @@ export component SetupWindow inherits Window {
                             height: 10px;
                         }
                         WrapText {
-                            text: root.installed == "" ? "把手机变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接，电脑端不需要驱动。"
+                            text: root.installed == "" ? "把手机变成电脑的触控板、快捷键和语音输入。蓝牙或局域网连接，不用装驱动。"
                                 : root.compare > 0 ? root.installed-name + " 会换成 " + root.version + "。按键布局、设置都会留着，开着的蒜鸟会先关掉。"
                                 : root.compare == 0 ? "电脑上已经是这个版本（" + root.version + "），会把程序文件重新放一遍。按键布局、设置都会留着。"
                                 : root.installed-name + " 比这个安装包（" + root.version + "）新。继续安装会换成 " + root.version + "，按键布局、设置都会留着。";
@@ -12460,8 +12465,18 @@ export component SetupWindow inherits Window {
                             VerticalLayout {
                                 SettingRow {
                                     first: true;
-                                    label: "装在";
+                                    label: root.moving ? "搬到" : "装在";
                                     note: root.folder;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostButton {
+                                            text: "更改";
+                                            small: true;
+                                            clicked => {
+                                                root.change-folder();
+                                            }
+                                        }
+                                    }
                                 }
                                 SettingRow {
                                     label: "在桌面放一个「蒜鸟」";
@@ -12484,7 +12499,10 @@ export component SetupWindow inherits Window {
                                 alignment: center;
                                 horizontal-stretch: 1;
                                 Muted {
-                                    text: "只给当前用户安装，不用管理员权限。";
+                                    text: root.folder-error != "" ? root.folder-error
+                                        : root.moving ? "原来位置上的蒜鸟装好后删掉，设置都留着。"
+                                        : "只给当前用户安装，不用管理员权限。";
+                                    color: root.folder-error != "" ? Theme.warn-fg : Theme.mut;
                                 }
                             }
                             GhostButton {
@@ -12530,7 +12548,7 @@ export component SetupWindow inherits Window {
                             height: 10px;
                         }
                         WrapText {
-                            text: "会先关掉开着的蒜鸟（托盘里的后台也一起退出），再删掉程序，以及开始菜单和桌面上的「蒜鸟」。";
+                            text: "会先关掉开着的蒜鸟（包括托盘里的后台），再删掉程序和开始菜单、桌面上的「蒜鸟」。";
                             font-size: 13.5px;
                         }
                         Rectangle {
@@ -12545,7 +12563,7 @@ export component SetupWindow inherits Window {
                                 }
                                 SettingRow {
                                     label: "同时删掉设置和日志";
-                                    note: "按键布局、配置备份、日志。不删的话，以后重新安装还能接着用。";
+                                    note: "布局、备份、日志。不删的话重装还能接着用";
                                     VerticalLayout {
                                         alignment: center;
                                         Toggle {

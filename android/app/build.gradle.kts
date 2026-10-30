@@ -13,8 +13,8 @@ android {
         applicationId = "dev.suanniao"
         minSdk = 28
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.9.19"
+        versionCode = 35
+        versionName = "0.9.20"
         // 只给 64 位 ARM 手机用，本地语音识别的原生库只打这一种，安装包小很多
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -62,6 +62,9 @@ kotlin {
 // 正式版安装包里带上「快」那档语音模型（x-asr-480ms），装好就能用，不用另外下载。
 // 模型在仓库外面的 ../models/ 里（太大，进不了 GitHub），发版时 release.yml 先把它下载好。
 // 本机打的 debug 包默认不带（装得快），要带就加 -PbundleModel。
+// -PnoModel：不带模型的「更新包」（发版时和完整安装包各打一个）。已经装着蒜鸟的手机在 App 里更新时只下它：
+// 装之前蒜鸟先把模型从现在的安装包里拷到手机存储（Updater / LocalAsr.copyBundled），以后更新不用再下模型。
+// 换模型时目录名一定要跟着换（比如 x-asr-480ms-v2）：手机上没有这个名字的模型，就会自动改下完整安装包。
 val bundledModel = rootProject.file("../models/x-asr-480ms")
 val bundledModelFiles = listOf("encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt")
 
@@ -84,6 +87,7 @@ abstract class StageModel : DefaultTask() {
 
 androidComponents {
     onVariants { variant ->
+        if (providers.gradleProperty("noModel").isPresent) return@onVariants
         if (variant.buildType != "release" && !providers.gradleProperty("bundleModel").isPresent) return@onVariants
         val stage = tasks.register<StageModel>("stage${variant.name.replaceFirstChar { it.uppercase() }}Model") {
             modelName.set(bundledModel.name)
