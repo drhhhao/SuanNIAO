@@ -34,6 +34,7 @@
 ## GitHub 和发版
 
 - 代码在 GitHub 公开仓库 `drhhhao/SuanNIAO`（公开是为了两端不登录就能检查更新、下载安装包），分支 `main`。推送前看一眼 `git status`，别把别的会话改了一半的东西带上去。
+- 发布完（Actions 跑完）还要在本机跑 `python tools/gitee-upload.py`，把这一版传到 Gitee（国内镜像，两端检查更新先找那边）。令牌在 `E:\Documents\蒜鸟发版密钥\gitee-token.txt`，不进仓库、不打印。GitHub 的机器往 Gitee 传太慢，用户 2026-10-31 要求以后都从本机传。没传的话两端照样从 GitHub 更新，只是国内慢。
 - 推到 main 以后，`.github/workflows/release.yml` 看「电脑端版本 + 手机端版本」这一对发布过没有：没有就在 GitHub 上编译两端，发一个 Release，名字像 `pc0.7.4-android0.9.3`；发布过就什么都不做。所以只改代码不改版本号，推上去不会出新版。
 - 推送就可能发版，属于对外的动作，用户说了再推。发版后装着的蒜鸟（电脑、手机）都会读到 Release 里的 `latest.json`、提示用户更新，所以推之前要确认这一版能用。
 - 手机正式版的签名密钥原件在 `E:\Documents\蒜鸟发版密钥\`，密码在同一个文件夹的 `说明.txt` 里。GitHub 上存的是加密变量 `SUANNIAO_KEYSTORE_BASE64` 和 `SUANNIAO_KEYSTORE_PASSWORD`。密钥绝不能进仓库。

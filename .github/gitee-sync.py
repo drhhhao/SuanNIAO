@@ -1,4 +1,4 @@
-"""发版后把这一版放到 Gitee 上（release.yml 的「同步到 Gitee」）：国内连 GitHub 慢，两端检查更新先找 Gitee。
+"""发版后把这一版放到 Gitee 上（本机跑 tools/gitee-upload.py，它下好文件再调这里）：国内连 GitHub 慢，两端检查更新先找 Gitee。
 
 做的事：
 1. 在 Gitee 仓库（GITEE_REPO）建同名的发行版（已经有了就接着用，重跑不会重复传）

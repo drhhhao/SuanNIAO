@@ -3,7 +3,8 @@
 # 手机端每一版有两个：完整安装包（带语音模型，第一次装用）和不带模型的更新包（-update.apk，App 里更新用）。
 # Release 里还有一个 latest.json（两端的版本号、下载地址、大小、SHA-256、更新说明）和它的签名 latest.json.sig：
 # 两端的蒜鸟读 releases/latest/download/latest.json 看有没有新版本（pc/update、android Updater.kt）。
-# 发完再同步一份到 Gitee（国内快，两端先找那边；见 .github/gitee-sync.py）。
+# 发完在本机跑 python tools/gitee-upload.py 同步一份到 Gitee（国内快，两端先找那边）：GitHub 的机器在国外，
+# 从这里往 Gitee 传一百多 MB 半小时都传不完（2026-10-31），所以不在这里传。
 # 也可以在仓库网页的 Actions → 发版 → Run workflow 手动跑一遍（同样只在版本号是新的时候发）。
 name: 发版
 
@@ -286,21 +287,3 @@ jobs:
             "dist/$lite_file#手机版更新包（App 里自动更新用，不带语音模型，第一次装别下）· $lite_file" \
             "dist/latest.json#latest.json（自动更新用，不用下载）" \
             "dist/latest.json.sig#latest.json.sig（自动更新用，不用下载）"
-
-  gitee:
-    name: 同步到 Gitee
-    needs: [check, publish]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # 刚发布的这一版原样下回来，传到 Gitee（见 .github/gitee-sync.py）。没传成两端照样从 GitHub 更新
-      - name: 同步
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.check.outputs.tag }}
-          GITEE_REPO: drhhhao_0/SuanNIAO
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        run: |
-          gh release download "$TAG" --dir dist
-          python3 .github/gitee-sync.py
