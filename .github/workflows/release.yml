@@ -201,13 +201,28 @@ jobs:
               json.dump(manifest, f, ensure_ascii=False, indent=2)
           PY
           cat dist/latest.json
+          # 文件名只能用英文（GitHub 会把中文文件名改掉，两端检查更新也认这几个名字），
+          # 所以开头放两个写明「电脑版」「手机版」的下载链接，文件列表里也给每个文件加中文显示名（下面的 #标签）
+          pc_file="SuanNIAO-PC-$PC-Setup.exe"
+          phone_file="SuanNIAO-Android-$PHONE.apk"
+          dl="https://github.com/$GH_REPO/releases/download/$TAG"
           {
-            echo "**电脑**（Windows 10 / 11）：下载 \`SuanNIAO-PC-$PC-Setup.exe\`，双击安装，不用管理员权限，装好后开始菜单里有「蒜鸟」。"
+            echo "## 下载"
+            echo
+            echo "- **电脑**（Windows 10 / 11）：[点这里下载电脑版安装包]($dl/$pc_file)（\`$pc_file\`）"
+            echo "- **手机**（安卓）：[点这里下载手机版安装包]($dl/$phone_file)（\`$phone_file\`）"
+            echo
+            echo "电脑和手机都要装。最下面的「Source code」是源代码，不用下。"
+            echo
+            echo "**电脑版**：双击安装，不用管理员权限，装好后开始菜单里有「蒜鸟」。"
             echo "Windows 提示「Windows 已保护你的电脑」时，点「更多信息」→「仍要运行」。装好以后有新版本时蒜鸟会自己提示，点「立即更新」就行，设置都会留着。"
             echo
-            echo "**手机**：下载 \`SuanNIAO-Android-$PHONE.apk\` 安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用。以后有新版本时手机上的蒜鸟也会提示。"
+            echo "**手机版**：在手机上打开安装（只支持 64 位的安卓手机）。语音识别的模型已经在安装包里，装好就能用。以后有新版本时手机上的蒜鸟也会提示。"
             echo
             if [ -n "$prev" ]; then echo "### 和上一版（$prev）比改了什么"; else echo "### 这一版有什么"; fi
             cat changes.md
           } > notes.md
-          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "蒜鸟 电脑端 $PC · 手机端 $PHONE" --notes-file notes.md
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "蒜鸟 电脑端 $PC · 手机端 $PHONE" --notes-file notes.md \
+            "dist/$pc_file#电脑版安装包（Windows 10 / 11）· $pc_file" \
+            "dist/$phone_file#手机版安装包（安卓）· $phone_file" \
+            "dist/latest.json#latest.json（自动更新用，不用下载）"

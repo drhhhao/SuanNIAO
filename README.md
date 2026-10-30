@@ -29,12 +29,12 @@
 
 ## 下载安装
 
-到 [Releases 发布页](https://github.com/drhhhao/SuanNIAO/releases/latest) 下载最新版：
+到 [Releases 发布页](https://github.com/drhhhao/SuanNIAO/releases/latest) 下载最新版，电脑和手机各装一个（页面上的「Source code」是源代码，不用下）：
 
-1. **电脑**：下载 `SuanNIAO-PC-版本-Setup.exe`，双击安装。
+1. **电脑**：下载「电脑版安装包」（`SuanNIAO-PC-版本-Setup.exe`），双击安装。
    - 不用管理员权限，装好后开始菜单里有「蒜鸟」，也可以在桌面放一个。
    - 如果 Windows 提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」（安装包没有做代码签名，所以会这样提示）。
-2. **手机**：下载 `SuanNIAO-Android-版本.apk`，在手机上打开安装。
+2. **手机**：下载「手机版安装包」（`SuanNIAO-Android-版本.apk`），在手机上打开安装。
    - 手机会问是否允许从这个来源安装应用，允许就行。
    - 安装包里已经带着语音识别的模型（所以有一百多 MB），装好就能用语音输入，不用另外下载。
 
