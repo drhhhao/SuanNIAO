@@ -743,6 +743,77 @@ pub struct Status {
     pub config_error: Option<ConfigError>,
     /// 蓝牙串口服务没开起来的原因（电脑蓝牙关着之类）；开起来了是空的
     pub bluetooth_error: String,
+    /// 手机现在是怎么连着的："lan"（局域网）、"bt"（蓝牙），两种同时连着时两个都有，局域网在前（消息走它）
+    pub links: Vec<String>,
+    /// 局域网连接：在不在听、地址、扫码绑定用的数据、绑定过的手机
+    pub lan: LanStatus,
+}
+
+/// 局域网连接的状态（后台写，主界面显示二维码、列已绑定的手机）
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LanStatus {
+    /// 在等手机连（TCP 端口开着）
+    pub listening: bool,
+    pub port: u16,
+    /// 这台电脑在局域网里的 IPv4 地址（有线、无线网卡的，虚拟网卡不算）
+    pub addrs: Vec<String>,
+    /// 电脑编号、证书指纹：放进二维码，手机靠它认出这台电脑、确认连的不是冒充的
+    pub pc_id: String,
+    pub fingerprint: String,
+    /// 正在显示二维码时的一次性配对码（10 分钟有效）和过期时刻（Unix 秒）；没在绑定时是空的
+    pub pair_code: String,
+    pub pair_expires: u64,
+    /// 刚用扫码绑定上的手机名（界面看到就关掉二维码、提示一声），和时刻
+    pub just_paired: String,
+    pub just_paired_at: u64,
+    pub phones: Vec<LanPhone>,
+    /// 开不起来的原因（端口被占、证书读不出来之类）
+    pub error: String,
+}
+
+/// 扫码绑定过的手机
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LanPhone {
+    pub id: String,
+    pub name: String,
+    pub model: String,
+    pub paired_at: u64,
+    pub last_seen: u64,
+    /// 现在正用局域网连着
+    pub online: bool,
+}
+
+/// 主界面让后台做的局域网操作（写 lan-command.json，后台每半秒看一次）
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LanCommand {
+    /// 每写一次加一，后台只处理没处理过的
+    pub seq: u64,
+    /// 二维码开着：要一个配对码（顺便开始听）；关了就作废
+    pub pairing: bool,
+    /// 解除绑定这些手机。界面每次都写上所有还没删掉的（删过的再删一次没关系），后写的指令不会把先写的冲掉
+    pub remove: Vec<String>,
+    /// 写的时刻（Unix 秒）。二维码开着时界面每 30 秒重写一次；后台超过 90 秒没见到新的就不再续配对码
+    /// （界面开着二维码时被关掉了）
+    pub at: u64,
+}
+
+pub fn lan_dir() -> PathBuf {
+    data_dir().join("lan")
+}
+
+pub fn lan_command_path() -> PathBuf {
+    data_dir().join("lan-command.json")
+}
+
+pub fn read_lan_command() -> Option<LanCommand> {
+    serde_json::from_str(&std::fs::read_to_string(lan_command_path()).ok()?).ok()
+}
+
+pub fn write_lan_command(command: &LanCommand) -> std::io::Result<()> {
+    write_json(&lan_command_path(), &serde_json::to_string(command).unwrap_or_default())
 }
 
 /// 配置文件读不出来：原因、坏文件另存成了什么、现在用的是什么

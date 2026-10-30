@@ -14,6 +14,7 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.drawable.LayerDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -93,7 +94,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private lateinit var readout: Ui.Readout
     /** 锁定录音时顶栏常驻的「录音中 · 点此结束」 */
     private lateinit var recPill: TextView
-    private lateinit var brand: TextView
+    private lateinit var brand: ImageView
     /** 方案多于一个时品牌名旁边常驻的方案名 */
     private lateinit var profileTag: TextView
     private lateinit var menuButton: ImageView
@@ -172,6 +173,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private val clearDetail = Runnable { detailPinned = false; showBase(animate = true) }
 
     private var menuSheet: Overlays.Sheet? = null
+    /** 菜单关掉后留着的那些行，下次打开接着用 */
+    private var menuBody: LinearLayout? = null
     private var pendingSheet: Overlays.Sheet? = null
     /** 断线期间新存了话：连上、说完后要问一次 */
     private var pendingFresh = false
@@ -205,6 +208,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         applyConfig(force = true)
         if (savedAddress() == null && !setup.tutorialSeen) main.post { setup.showOnboarding() }
         handleDebugIntent(intent)
+        handleLinkIntent(intent)
     }
 
     override fun onStart() {
@@ -257,6 +261,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleDebugIntent(intent)
+        handleLinkIntent(intent)
     }
 
     /**
@@ -294,6 +299,10 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 config = it
                 applyConfig(force = true)
             }
+        }
+        // 当成扫到了这个文件里的二维码内容（测扫码绑定不用对着屏幕扫）
+        intent.getStringExtra("debugPairFile")?.let { path ->
+            runCatching { File(path).readText() }.getOrNull()?.let { text -> main.postDelayed({ onScanned(text) }, 800) }
         }
         intent.getStringExtra("debugUpdateUrl")?.let { url ->
             val auto = intent.getBooleanExtra("debugUpdateAuto", false)
@@ -384,9 +393,161 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
 
     /** 选好了电脑、有蓝牙权限就让服务开始连（已经在连就什么都不变） */
     private fun startLinkIfReady(address: String? = null) {
-        val target = address ?: savedAddress() ?: return
-        if (!hasBluetoothPermission()) return
-        startForegroundService(Intent(this, LinkService::class.java).putExtra(LinkService.EXTRA_ADDRESS, target))
+        val target = address ?: savedAddress()
+        val bluetooth = target != null && hasBluetoothPermission()
+        if (!bluetooth && !lanBound()) return
+        startForegroundService(Intent(this, LinkService::class.java).apply { if (bluetooth) putExtra(LinkService.EXTRA_ADDRESS, target) })
+    }
+
+    /** 扫码绑定过电脑（而且电脑上没解除绑定） */
+    private fun lanBound(): Boolean = LanBinding.load(this)?.revoked == false
+
+    // ───────── 局域网：扫电脑上的二维码绑定 ─────────
+
+    /** 刚从蒜鸟里点了「扫码连接电脑」的时刻：之后几分钟扫回来的链接不用再问一遍 */
+    private var scanStartedAt = 0L
+
+    /**
+     * 扫码交给系统：小米手机打开「扫一扫」，扫到电脑二维码里的 suanniao://pair 链接会用蒜鸟打开（handleLinkIntent）。
+     * 蒜鸟自己不要相机权限：澎湃 OS 会把有相机权限的 App 限在 60 Hz。别的手机用自带相机扫，或者从相册选二维码图片
+     */
+    override fun scanComputer() {
+        scanStartedAt = SystemClock.elapsedRealtime()
+        val scanner = Intent("miui.intent.action.scanbarcode").setPackage("com.xiaomi.scanner")
+        if (scanner.resolveActivity(packageManager) != null && runCatching { startActivityForResult(scanner, REQ_SCAN) }.isSuccess) {
+            flash("对准电脑上蒜鸟的二维码（电脑：设置 → 局域网连接 → 显示二维码）", 4000)
+            return
+        }
+        overlays.dialog(
+            "扫电脑上的二维码",
+            "用手机自带的相机或「扫一扫」对准电脑上蒜鸟显示的二维码（电脑：设置 → 局域网连接 → 显示二维码），扫出来的链接选用蒜鸟打开。\n\n也可以把二维码拍下来或截图，从相册里选。",
+            listOf(Btn("知道了"), Btn("从相册选", Style.PRIMARY) { pickQrImage() }),
+        )
+    }
+
+    private fun pickQrImage() {
+        scanStartedAt = SystemClock.elapsedRealtime()
+        runCatching { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).setType("image/*"), REQ_PICK_QR) }
+            .onFailure { say("打不开相册") }
+    }
+
+    @Deprecated("Activity 的老接口：扫一扫、相册用它回结果")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        when (requestCode) {
+            // 扫一扫多半自己打开链接（回到 handleLinkIntent）；它要是把内容带回来了，也认
+            REQ_SCAN -> data?.extras?.also { extras ->
+                if (BuildConfig.DEBUG) extras.keySet().forEach { k -> android.util.Log.i("SuanNIAO-scan", "result $k = ${extras.get(k)}") }
+            }?.let { extras ->
+                extras.keySet().firstNotNullOfOrNull { k -> extras.get(k)?.toString()?.takeIf { it.startsWith("suanniao://") } }
+            }?.let { onScanned(it) }
+            REQ_PICK_QR -> data?.data?.let { uri -> decodeQrImage(uri) }
+            else -> {
+                @Suppress("DEPRECATION")
+                super.onActivityResult(requestCode, resultCode, data)
+            }
+        }
+    }
+
+    /** 从图片里认二维码（后台线程：大图解码要几百毫秒） */
+    private fun decodeQrImage(uri: android.net.Uri) {
+        flash("正在识别二维码…", 2000)
+        Thread {
+            val text = runCatching {
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+                var sample = 1
+                while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 2000) sample *= 2
+                val bitmap = contentResolver.openInputStream(uri)?.use {
+                    android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+                } ?: return@runCatching null
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                val source = com.google.zxing.RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
+                val hints = mapOf(
+                    com.google.zxing.DecodeHintType.POSSIBLE_FORMATS to listOf(com.google.zxing.BarcodeFormat.QR_CODE),
+                    com.google.zxing.DecodeHintType.TRY_HARDER to true,
+                )
+                com.google.zxing.MultiFormatReader().decode(com.google.zxing.BinaryBitmap(com.google.zxing.common.HybridBinarizer(source)), hints).text
+            }.getOrNull()
+            main.post { if (text == null) say("这张图里没认出二维码：拍清楚一点，或者直接截电脑上的二维码") else onScanned(text) }
+        }.start()
+    }
+
+    /**
+     * 别的 App（扫一扫、相机、浏览器）打开了 suanniao://pair 链接。刚从蒜鸟里点了扫码就直接绑定；
+     * 不是的话先问一句，免得网页、别的 App 悄悄把手机绑到陌生的电脑上
+     */
+    private fun handleLinkIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (intent.action != Intent.ACTION_VIEW || data.scheme != "suanniao") return
+        if (BuildConfig.DEBUG) android.util.Log.i("SuanNIAO-scan", "link: $data")
+        setIntent(Intent(intent).setData(null)) // 转屏、重建时别再处理一遍
+        val text = data.toString()
+        val qr = LanQr.parse(text)
+        if (qr == null) {
+            say("这不是蒜鸟的二维码：在电脑上打开蒜鸟 →「设置」→「局域网连接」→「显示二维码」")
+            return
+        }
+        val fresh = scanStartedAt != 0L && SystemClock.elapsedRealtime() - scanStartedAt < 5 * 60_000L
+        scanStartedAt = 0L
+        if (fresh) {
+            main.post { onScanned(text) }
+            return
+        }
+        main.post {
+            overlays.dialog(
+                "绑定这台电脑？",
+                "「${qr.name}」（${qr.addrs.joinToString("、")}）\n绑定以后，手机和这台电脑连着同一个网络时，蒜鸟会自动用局域网连上它。",
+                listOf(Btn("取消"), Btn("绑定", Style.PRIMARY) { onScanned(text) }),
+            )
+        }
+    }
+
+    /** 扫到的二维码内容：是蒜鸟电脑上的就去配对 */
+    private fun onScanned(text: String) {
+        if (BuildConfig.DEBUG) android.util.Log.i("SuanNIAO-scan", "scanned: $text")
+        val qr = LanQr.parse(text)
+        if (qr == null) {
+            say("这不是蒜鸟的二维码：在电脑上打开蒜鸟 →「设置」→「局域网连接」→「显示二维码」")
+            return
+        }
+        startForegroundService(Intent(this, LinkService::class.java))
+        val l = link
+        if (l == null) {
+            say("服务还没准备好，稍等一下再扫")
+            return
+        }
+        flash("正在连接「${qr.name}」…", 4000)
+        l.pairWith(qr)
+    }
+
+    override fun onPairResult(ok: Boolean, message: String) {
+        if (ok) Ui.buzz(root, Ui.Buzz.TAP)
+        say(message)
+        updateBanner()
+        menuSheet?.refresh()
+    }
+
+    private fun lanLine(b: LanBinding): String = when {
+        b.revoked -> "「${b.name}」上解除了绑定，点这里重新扫码"
+        else -> "已绑定「${b.name}」 · " + when (link?.lanPhase) {
+            LinkService.LanPhase.CONNECTED -> "正用局域网连着"
+            LinkService.LanPhase.CONNECTING -> "正在连接…"
+            else -> "在同一个网络里会自动连上"
+        }
+    }
+
+    private fun forgetLan(b: LanBinding) {
+        overlays.dialog(
+            "解除局域网绑定？",
+            "这部手机不再用局域网连「${b.name}」，蓝牙照常能用。以后想用要重新扫码。\n电脑上的绑定记录在电脑的「设置 → 局域网连接」里删。",
+            listOf(Btn("取消"), Btn("解除", Style.DANGER) {
+                link?.forgetLan() ?: LanBinding.save(this, null)
+                updateBanner()
+                menuSheet?.refresh()
+                say("已解除局域网绑定")
+            }),
+        )
     }
 
     /** 语音按钮用：有麦克风权限返回 true；没有就先说明用途再申请（这次按不了，授权后再按）。 */
@@ -483,12 +644,16 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         }
 
         // 顶栏：左边名字（和方案），中间靠右一行状态，最右是菜单；调整布局时换成 取消 · 提示 · 对齐/自由 · 完成
-        brand = TextView(this).apply {
-            text = "蒜鸟"
-            setTextColor(palette.fg)
-            typeface = Ui.font(context, 900)
-            textSize = 18f
-            includeFontPadding = false
+        // 品牌字「蒜鸟」三层叠起来：字身跟着深浅色，蒜苗绿色，蛋固定蛋黄色（tools/logo/wordmark.py 生成）
+        brand = ImageView(this).apply {
+            setImageDrawable(LayerDrawable(arrayOf(
+                getDrawable(R.drawable.wordmark)!!.mutate().apply { setTint(palette.fg) },
+                getDrawable(R.drawable.wordmark_sprouts)!!.mutate().apply {
+                    setTint(if (palette.dark) 0xFFBEF264.toInt() else 0xFF6DB81F.toInt())
+                },
+                getDrawable(R.drawable.wordmark_egg)!!,
+            )))
+            contentDescription = "蒜鸟"
         }
         profileTag = TextView(this).apply {
             setTextColor(palette.fg)
@@ -904,7 +1069,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         status = s
         statusKnown = true
         // 记下电脑的名字（旧版没存过，菜单里不然只能显示蓝牙地址）
-        if (s.connected && !s.pcName.isNullOrBlank() && savedName() != s.pcName) prefs.edit().putString(KEY_PC_NAME, s.pcName).apply()
+        if (s.connected && !s.lan && !s.pcName.isNullOrBlank() && savedName() != s.pcName) prefs.edit().putString(KEY_PC_NAME, s.pcName).apply()
         if (s.connected && !was.connected) {
             if (wasKnown) {
                 // 重新连上：闪一下连的是哪台电脑，轻震一下
@@ -944,8 +1109,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         editor != null -> editHint()
         connected -> "已连接 · ${pcName() ?: "电脑"}"
         status.phase == Phase.OFF && link?.stoppedByUser == true -> "已断开"
-        !hasBluetoothPermission() -> "需要蓝牙权限"
-        savedAddress() == null || status.phase == Phase.NO_DEVICE -> "还没选电脑"
+        !hasBluetoothPermission() && !lanBound() -> "需要蓝牙权限"
+        (savedAddress() == null && !lanBound()) || status.phase == Phase.NO_DEVICE -> "还没选电脑"
         status.phase == Phase.BT_OFF -> "手机蓝牙没开"
         status.phase == Phase.WAITING || offlineLong() -> "未连接电脑"
         else -> "正在连接…"
@@ -977,8 +1142,10 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         val pendingLine = if (pending.isNotEmpty()) "有 ${count(pending)} 字没发出去 · 点这里看" else null
         val openPending: (() -> Unit)? = if (pending.isNotEmpty()) ({ showPendingSheet() }) else null
         return when {
-            !hasBluetoothPermission() -> BannerSpec("perm", "需要「附近的设备」权限", "用蓝牙连电脑要用到它，只连你选的那台", "允许") { askBluetoothPermission() }
-            savedAddress() == null -> BannerSpec("nodev", "还没选电脑", "选好以后会自动连接", "选择电脑") { pickComputer() }
+            !connected && savedAddress() == null && LanBinding.load(this)?.revoked == true ->
+                BannerSpec("lanoff", "电脑上解除了绑定", "重新扫电脑上的二维码就能再用局域网连", "扫码") { scanComputer() }
+            !hasBluetoothPermission() && !lanBound() -> BannerSpec("perm", "需要「附近的设备」权限", "用蓝牙连电脑要用到它，只连你选的那台", "允许") { askBluetoothPermission() }
+            savedAddress() == null && !lanBound() -> BannerSpec("nodev", "还没选电脑", "蓝牙选电脑，或者扫电脑上的二维码", "选择电脑") { pickComputer() }
             connected && mappingPaused -> BannerSpec("paused", "按键已暂停", "触控板和语音照常", "恢复", paused = true) { requestEnabled(true) }
             connected -> null
             status.phase == Phase.OFF && link?.stoppedByUser == true ->
@@ -1018,35 +1185,88 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         if (spec != null && !wasShown) expandBanner(true) else if (spec == null && wasShown) expandBanner(false)
     }
 
+    /**
+     * 横幅展开、收起。网格的格子高度跟着可用高度走，横幅一出来所有按键都要变矮；
+     * 以前每帧改横幅高度，整张网格每帧重新排版、重画几十个键上的字，一帧要 20~100 毫秒，动画一卡一卡。
+     * 现在只排一次版：展开时先直接排成最终的样子，再用位移 + 纵向缩放把网格「放回」原来的位置和大小，
+     * 然后把这两个量动画回 0、1；收起时反过来，先用变换动到收起后的样子，最后一帧才真的改布局（改完画面不变）。
+     * 位移、缩放只改图层属性，每帧不排版也不重画。
+     */
     private fun expandBanner(show: Boolean) {
-        bannerAnim?.cancel()
-        if (content.width == 0) { // 还没排版（刚打开）：直接显示，不做动画
+        bannerAnim?.end() // 上一个还没走完：先直接走到终点，从稳定的状态开始
+        bannerAnim = null
+        if (content.width == 0 || grid.height == 0) { // 还没排版（刚打开）：直接显示，不做动画
             bannerBox.visibility = if (show) View.VISIBLE else View.GONE
             bannerBox.alpha = 1f
-            bannerBox.layoutParams = bannerBox.layoutParams.apply { height = WRAP_CONTENT }
             return
         }
-        val child = bannerBox.getChildAt(0)
-        child.measure(View.MeasureSpec.makeMeasureSpec(content.width - content.paddingLeft - content.paddingRight, View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
-        val full = child.measuredHeight
-        val from = if (bannerBox.visibility == View.VISIBLE) bannerBox.height else 0
-        val to = if (show) full else 0
-        bannerBox.visibility = View.VISIBLE
-        bannerAnim = ValueAnimator.ofInt(from, to).apply {
-            duration = 240
-            interpolator = Ui.EASE
-            addUpdateListener {
-                bannerBox.layoutParams = bannerBox.layoutParams.apply { height = it.animatedValue as Int }
-                bannerBox.alpha = if (full > 0) (it.animatedValue as Int).toFloat() / full else 1f
+        val movers = listOf<View>(tabScroller, grid)
+        val gridH = grid.height.toFloat()
+        if (show) {
+            val child = bannerBox.getChildAt(0)
+            child.measure(View.MeasureSpec.makeMeasureSpec(content.width - content.paddingLeft - content.paddingRight, View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+            val full = child.measuredHeight.toFloat()
+            if (full <= 0f || full >= gridH) {
+                bannerBox.visibility = View.VISIBLE
+                return
             }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) {
-                    if (!show) bannerBox.visibility = View.GONE
-                    bannerBox.layoutParams = bannerBox.layoutParams.apply { height = if (show) WRAP_CONTENT else 0 }
-                }
-            })
-            start()
+            val scale0 = gridH / (gridH - full)
+            // 这一帧：横幅占好位置，网格排成变矮后的样子，但看起来和原来一模一样
+            bannerBox.visibility = View.VISIBLE
+            bannerBox.alpha = 0f
+            grid.pivotY = 0f
+            grid.scaleY = scale0
+            movers.forEach { it.translationY = -full }
+            bannerAnim = bannerAnimator(240) { f ->
+                bannerBox.alpha = f
+                grid.scaleY = scale0 + (1f - scale0) * f
+                movers.forEach { it.translationY = -full * (1f - f) }
+            }.also { startAfterLayout(it) }
+        } else {
+            val h = bannerBox.height.toFloat()
+            if (h <= 0f) {
+                bannerBox.visibility = View.GONE
+                return
+            }
+            val scale1 = (gridH + h) / gridH
+            grid.pivotY = 0f
+            bannerAnim = bannerAnimator(220) { f ->
+                bannerBox.alpha = 1f - f
+                grid.scaleY = 1f + (scale1 - 1f) * f
+                movers.forEach { it.translationY = -h * f }
+            }.apply {
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        // 和下一次排版同一帧生效：排完的网格正好在动画终点的位置、大小
+                        bannerBox.visibility = View.GONE
+                        bannerBox.alpha = 1f
+                        grid.scaleY = 1f
+                        movers.forEach { it.translationY = 0f }
+                    }
+                })
+                start()
+            }
         }
+    }
+
+    private fun bannerAnimator(ms: Long, step: (Float) -> Unit) = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = ms
+        interpolator = Ui.EASE
+        addUpdateListener { step(it.animatedValue as Float) }
+        addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) = step(1f)
+        })
+    }
+
+    /** 排版、重画这些重活在这一帧做完，下一帧再开始计时，动画不会一出来就跳掉一截 */
+    private fun startAfterLayout(anim: ValueAnimator) {
+        content.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                content.viewTreeObserver.removeOnPreDrawListener(this)
+                android.view.Choreographer.getInstance().postFrameCallback { if (bannerAnim === anim) anim.start() }
+                return true
+            }
+        })
     }
 
     private fun retryLink() {
@@ -1173,13 +1393,14 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private fun showMenu() {
         if (overlays.isOpen) return
         lateinit var sheet: Overlays.Sheet
-        sheet = overlays.sheet { buildMenu(this) }
+        sheet = overlays.sheet(menuBody) { buildMenu(this) }
+        menuBody = sheet.body
         sheet.onDismiss = { if (menuSheet === sheet) menuSheet = null }
         menuSheet = sheet
     }
 
     private fun buildMenu(s: Overlays.Sheet) = with(s) {
-        header("蒜鸟", if (connected) "已连接 · ${pcName() ?: "电脑"}" else baseText())
+        header("蒜鸟", if (connected) "已连接 · ${pcName() ?: "电脑"}" + (status.via?.let { " · $it" } ?: "") else baseText())
         val pending = pendingText()
         if (pending.isNotEmpty()) {
             row("刚才没发出去的 ${count(pending)} 字", if (connected) "发送、复制或丢弃" else "连上电脑后可以发送，也可以先复制") {
@@ -1224,9 +1445,20 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         }
 
         divider()
-        row("选择电脑", savedName() ?: pcName() ?: if (savedAddress() != null) "已选一台电脑" else "还没选") {
+        row("选择电脑", "蓝牙 · " + (savedName() ?: if (savedAddress() != null) "已选一台电脑" else "还没选")) {
             s.dismiss()
             pickComputer()
+        }
+        val lan = LanBinding.load(this@MainActivity)
+        row("扫码连接电脑", if (lan == null) "不用蓝牙：手机和电脑连着同一个网络就行" else lanLine(lan)) {
+            s.dismiss()
+            scanComputer()
+        }
+        if (lan != null) {
+            row("解除局域网绑定", "只在这部手机上忘掉「${lan.name}」", trailing = null) {
+                s.dismiss()
+                forgetLan(lan)
+            }
         }
         row("使用教程", "一步步看怎么连电脑、怎么用") {
             s.dismiss()
@@ -1260,7 +1492,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             s.refresh()
         }
         if (debugOpen) {
-            row("测延迟", latencyText ?: "连发 100 次，看蓝牙来回一趟要多久", trailing = null) { latencyTest() }
+            row("测延迟", latencyText ?: "连发 100 次，看消息来回一趟要多久", trailing = null) { latencyTest() }
             row("电脑后台内存", memText ?: "看看电脑上的后台占多少内存", trailing = null) { askMemory() }
         }
         if (status.phase != Phase.OFF) {
@@ -2035,6 +2267,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         private const val REQ_BLUETOOTH = 1
         private const val REQ_MIC = 2
         private const val REQ_NOTIFY = 3
+        private const val REQ_SCAN = 4
+        private const val REQ_PICK_QR = 5
         /** 没连上超过这么久才出横幅、顶栏才说「未连接电脑」 */
         private const val OFFLINE_GRACE_MS = 1500L
         /** 闲置这么久把屏幕调暗 */

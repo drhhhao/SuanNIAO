@@ -12,6 +12,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod history;
+mod lan;
 mod setup;
 mod tools;
 mod update;
@@ -114,6 +115,8 @@ struct Ctx {
     bluetooth_busy: Cell<bool>,
     /// 问过开机自启没有（ui.json）
     autostart_asked: Cell<bool>,
+    /// 局域网连接：二维码弹窗、绑定过的手机
+    lan: RefCell<lan::LanUi>,
 }
 
 thread_local! {
@@ -257,6 +260,7 @@ fn main() -> Result<(), slint::PlatformError> {
         bluetooth_at: Cell::new(None),
         bluetooth_busy: Cell::new(false),
         autostart_asked: Cell::new(ui_flag("autostartAsked")),
+        lan: RefCell::new(lan::LanUi::default()),
     });
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     ui.set_recent(ModelRc::from(ctx.recent.clone()));
@@ -278,6 +282,14 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         ui.set_tutorial_first_run(true);
         ui.set_tutorial_open(true);
+    }
+    // `--lan-qr`：打开设置页、弹出扫码绑定的二维码（截图检查用）
+    let lan_qr = Timer::default();
+    if std::env::args().any(|a| a == "--lan-qr") {
+        ui.set_tutorial_open(false);
+        ui.set_nav(4);
+        let ctx = ctx.clone();
+        lan_qr.start(TimerMode::SingleShot, Duration::from_millis(1500), move || ctx.lan_pair());
     }
 
     let status_timer = Timer::default();
@@ -428,6 +440,9 @@ fn wire(ui: &AppWindow, ctx: &Rc<Ctx>) {
     bind!(on_toast_clicked, | | toast_clicked);
     bind!(on_autostart_answer, |on| autostart_answer);
     bind!(on_recheck, | | recheck);
+    bind!(on_lan_pair, | | lan_pair);
+    bind!(on_lan_close, | | lan_close);
+    bind!(on_lan_remove, |id| lan_remove);
     bind!(on_open_bluetooth_settings, | | open_bluetooth_settings);
     bind!(on_tutorial_recheck, | | tutorial_recheck);
     bind!(on_tutorial_closed, |furthest| tutorial_closed);
@@ -1370,6 +1385,10 @@ impl Ctx {
             self.refresh_overview();
         }
         self.refresh_recent(&status.recent);
+        let paired = self.lan.borrow_mut().refresh(&ui, running, &status);
+        if let Some(message) = paired {
+            self.toast(&message);
+        }
         self.refresh_banner(running, &status);
         self.refresh_checks(running, connected, &status, false);
     }
@@ -1427,14 +1446,38 @@ impl Ctx {
         };
         let (paired, paired_note) = match &state {
             Some(s) if !s.phones.is_empty() => (1, format!("配对过的手机：{}", s.phones.join("、"))),
-            Some(s) if s.paired > 0 => (0, "配对过的设备里没有手机：在电脑的蓝牙设置里「添加设备」，选你的手机".to_string()),
-            Some(_) => (0, "在电脑的蓝牙设置里「添加设备」，选你的手机".to_string()),
+            Some(s) if s.paired > 0 => (0, "配对过的设备里没有手机：在蓝牙设置里「添加设备」".to_string()),
+            Some(_) => (0, "在蓝牙设置里「添加设备」，选你的手机".to_string()),
             None => (-1, String::new()),
         };
         ui.set_check_bluetooth(bt);
         ui.set_bluetooth_note(bt_note.into());
         ui.set_check_paired(paired);
         ui.set_paired_note(paired_note.into());
+    }
+
+    fn lan_pair(self: &Rc<Self>) {
+        let Some(ui) = self.ui() else { return };
+        if !win::core_running() {
+            self.toast("蒜鸟后台没在运行，先在首页点「启动后台」");
+            return;
+        }
+        self.lan.borrow_mut().open(&ui);
+        self.refresh_status();
+    }
+
+    fn lan_close(self: &Rc<Self>) {
+        let Some(ui) = self.ui() else { return };
+        self.lan.borrow_mut().close(&ui);
+    }
+
+    fn lan_remove(self: &Rc<Self>, id: SharedString) {
+        self.lan.borrow_mut().remove(&id);
+        if win::core_running() {
+            self.toast("已解除绑定：这部手机要重新扫码才能用局域网连");
+        } else {
+            self.toast("蒜鸟后台没在运行：后台启动时会解除这部手机的绑定");
+        }
     }
 
     fn recheck(self: &Rc<Self>) {

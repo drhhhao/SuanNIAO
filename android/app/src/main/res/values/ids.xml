@@ -2,4 +2,5 @@
 <resources>
     <item name="grid_cell" type="id" />
     <item name="module_id" type="id" />
+    <item name="sheet_key" type="id" />
 </resources>

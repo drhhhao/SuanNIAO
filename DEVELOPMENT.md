@@ -6,7 +6,40 @@
 
 把小米 13 变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接；语音在手机上识别（本地模型，不用联网），只把文字发给电脑。方案见上一级目录的 `方案.md`。
 
-## 当前版本：电脑端 0.7.9 · 手机端 0.9.8
+## 当前版本：电脑端 0.7.13 · 手机端 0.9.11
+
+- 电脑端 0.7.13：设置行说明文字重叠 + 全界面说明精简。
+  - 原因：Slint 1.18 里，ScrollView 内折行（`wrap: word-wrap`）文字的高度在窗口改宽度后不会跟着重算（先窄后宽、内容超出要滚动时能复现），`SettingRow` 的说明用的是折行的 `Muted`，行高按旧宽度算，文字盖到下一行。
+  - 改法：`SettingRow` 的说明改成单行 `Text` + `overflow: elide`，不再依赖折行测高；说明都压到最窄窗口（1040 px）下一行放得下。别的地方的折行文字（`Muted`、`WrapText`）同样有这个风险，尽量写短。
+  - 截图测试：`%TEMP%\sn-text\flow.ps1` 多了 `-Size "w,h"` 和步骤 `rW,H`（运行中改窗口大小）；复现用 `-Size "1500,1500" -Steps "w2000;r1900,1500;w1500;s"`。
+
+- 电脑端 0.7.12 / 手机端 0.9.11：动画顺滑 + 局域网审查出来的问题。
+  - **不要相机权限**：澎湃 OS 把声明了 `CAMERA` 的 App 归到「高刷新率应用 → 跟随应用内设置」（和相机、王者荣耀一类），powerkeeper 每次切到前台都投 `PRIORITY_MIUI_REFRESH_RATE` 最高 60 Hz 的票；`preferredDisplayModeId`、`requestedFrameRate` 都越不过它（`AppRequestObserver mIgnorePreferredRefreshRate: true`）。卸载重装、不请求刷新率都还是 60；只去掉相机权限（连 zxing-android-embedded 合并进来的）就是 120（菜单打开 21 → 40 帧）。所以清单里写了 `<uses-permission CAMERA tools:node="remove">`，扫码交给系统：`scanComputer()` 发 `miui.intent.action.scanbarcode` 给 `com.xiaomi.scanner`（`<queries>` 里声明了这个包，不然 Android 11+ 查不到），扫到的 `suanniao://pair?…` 由 MainActivity 的 VIEW intent-filter 接住（`handleLinkIntent`）。5 分钟内从蒜鸟发起的扫码直接绑定，别的来源（相机、浏览器）先弹「绑定这台电脑？」。没有扫一扫时提示用相机扫，或 `ACTION_GET_CONTENT` 选图、用 zxing core 认（`decodeQrImage`）。测试：`%TEMP%\sn-lan\scanflow.py`（生成带真配对码的二维码图片放进相册 → 扫一扫「相册」→ 只在那一格是黑白二维码时才点），跑两次都一次绑定成功。查刷新率：`settings get secure miui_refresh_rate`（蒜鸟在前台时）、`dumpsys display` 里 DisplayModeDirector 的 mVotes、`dumpsys activity service com.miui.powerkeeper` 的 `setScreenEffect pkg=… fps=`。
+  - 测动画：`dumpsys gfxinfo dev.suanniao reset` → 操作 → `dumpsys gfxinfo dev.suanniao framestats`，逐帧看 `IntendedVsync` 间隔（> 1.5 倍刷新周期就是丢了帧）、主线程晚开工多久（`HandleInputStart - IntendedVsync`）、排版 / 录制 / 出图各几毫秒。这些是在 60 Hz（每帧 16.7 ms）下调的；去掉相机权限后是 120 Hz（8.3 ms），见上一条。
+  - 面板、对话框、教程（`Overlays.Modal.attach`）：进场分两步。第一帧放在起点（屏幕外、透明），搭建、排版、绘制、预先画好硬件图层都在这一帧做完，下一帧（`Choreographer.postFrameCallback`）才开始动画。进场没走完时 `refresh()` 不原地重建，等走完再建。
+  - `Overlays.Sheet` 刷新不再 `removeAllViews` 重搭：`place()` 按「种类 + 标题 + 第几次出现」找旧的行，就地改小字、能不能点、开关状态和点了做什么（`RowParts` 挂在行的 tag 上）；只有增删的行才新建。行数变化用 `LayoutTransition`（进场后才开）。菜单的 body 关掉后留着（`overlays.sheet(menuBody)`），下次打开只更新：搭建 45~80 ms → 5~17 ms，点开关时主线程卡 80~100 ms 两次 → 没有超时帧。
+  - 横幅（`expandBanner`）：以前每帧改横幅高度，整张网格每帧重排、重画，一帧 18~120 ms。现在只排一次版，网格用 `translationY` + `scaleY`（pivot 在顶上）从旧位置、大小动到新的；收起时先用变换动到终点，最后一帧才改布局。收起 p50 18 → 8 ms，p90 26 → 14 ms。
+  - 局域网审查（一个 Agent 读代码找的问题，逐条修了）：
+    - 断线检测：手机每条连接记 `awaitSince`（发了心跳还没收到任何东西的起点），亮屏时局域网 4.5 秒没回音就关掉。电脑 `pc/lan` 认证后开 TCP keepalive（5 秒 / 1 秒），`write_all` 5 秒写不完就当连接坏了、整个断开（读的一方也会醒）；会话看门狗亮屏时局域网 5 秒没消息就断开。实测：手机关 Wi-Fi → 电脑 5 秒断开、蓝牙接着用；电脑后台挂起 7 秒 → 手机 4.5 秒断开局域网、恢复后 1 秒重连。
+    - 回复走原连接：hello、config、lan、pong、mem、layoutSaved 从收到请求的那条连接发回（`link::reply`）；其他消息 `send_to_phone` 按局域网、蓝牙的顺序试，局域网写失败就关掉它再试下一条。延迟统计因此不再掺另一条连接的样本。
+    - 直通按住的键：电脑的 `HOLDS` 改成所有会话共用（按代数判断作废的记录），一条断开时只有一条都不剩了才取消动作、松开所有键；看门狗看所有连接最后收到消息的时刻。手机 `route()`：还按着键、鼠标键时消息固定走按下时那条连接。
+    - 多部手机：`Link.phone`（局域网认证得到；蓝牙看 hello 里新加的 `lan` 字段，手机扫码绑定时拿到的编号）。别的、仍在绑定列表里的手机连着时，新连接回 `{"t":"busy"}` 后断开，手机 30 秒后再试。手机端比较两条连接 hello 里的 `pc`，蓝牙连的是另一台电脑就不用它（只收心跳）。
+    - 电脑 `pc/lan/src/connection.rs`：一次读到的密文超过 16 KB 明文缓冲时，剩下的先存着，明文取走了再喂（以前会报 "received plaintext buffer full" 断开）。配对请求可带 `prev{id,token}`，令牌对得上就删掉同一部手机的旧记录。codex 子代理改的，`cargo test -p suanniao-lan` 现在 35 个测试。
+    - `lan-command.json` 加 `at`：界面二维码开着时每 30 秒重写一次，后台 90 秒没见到新的就不续配对码；`remove` 每次都带上所有还没删掉的手机（删过的再删是空操作），后台启动时也照删。
+    - 手机 `LanBinding.update` / `updateIfSame`：读、改、写在一把锁里，连接线程只改同一次绑定（电脑、手机编号都没变）。局域网 socket 绑到 Wi-Fi / 有线的 `Network` 上（全局 VPN 下也能连）。`Setup.showPicker` 没蓝牙权限、蓝牙没开时也打开，里面有扫码那一行。
+    - 电脑取地址时，带网关的「Hyper-V Virtual Ethernet Adapter」（外部虚拟交换机）不跳过。
+
+- 电脑端 0.7.11 / 手机端 0.9.10：第二种连接方式——局域网（TCP + TLS），扫码绑定，和蓝牙并存。
+  - 加密和认证在新 crate `pc/lan`（`suanniao-lan`，由 codex 子代理按说明写、自带 23 个测试：`cargo test -p suanniao-lan`）和手机 `LanSecure.kt`。电脑是 TLS 服务端，自签名 ECDSA P-256 证书（rustls + rcgen，ring 后端），私钥用 DPAPI 加密存；手机只认二维码里的证书指纹（DER 的 SHA-256，base64url）。TLS 建好后手机第一行发 `pair`（一次性配对码，10 分钟、新码顶掉旧码）或 `auth`（手机编号 + 长期令牌，电脑只存 SHA-256），电脑回 `paired` / `authOk` / `authFail{reason}`，10 秒内要认证完。文件在 `%APPDATA%\SuanNIAO\lan\`（`identity.json`、`phones.json`、`port`）；手机的令牌用 Keystore AES-GCM 加密后存在偏好 `lan_binding` 里（`LanBinding.kt`）。
+  - 电脑后台 `pc/core/src/lan.rs`：绑定过手机或者二维码开着时才开端口（默认 47820，被占就让系统挑一个并记下）；`GetAdaptersAddresses` 取有线、无线网卡的 IPv4（跳过 TUN、Hyper-V、VPN 这类虚拟网卡），每 10 秒看一次，变了发 `{"t":"lan","pc","addrs","port","fp"}` 给手机（蓝牙连着也发）。主界面写 `lan-command.json`（`seq`、`pairing`、`remove`），后台每半秒看一次；状态写进 `status.json` 的 `lan`（地址、端口、指纹、配对码、`justPaired`、绑定过的手机）和 `links`（现在连着的方式）。
+  - `link.rs` 的会话不再绑死蓝牙：`Conn::Bt` / `Conn::Lan`，每种最多一条（新的顶掉同一种的旧的），两种可以同时在；发给手机的走局域网，没有才走蓝牙。一条断开时照旧取消动作、松开按着的键。
+  - 主界面：设置页「局域网连接」卡片（显示二维码、绑定过的手机、解除绑定），二维码弹窗 `LanDialog`（`pc/ui/src/lan.rs`，`qrcode` crate 画，内容 `suanniao://pair?v=1&pc&n&a&p&fp&c`）；侧栏连接状态后面写「局域网 / 蓝牙 / 局域网 + 蓝牙」。截图检查用 `SuanNIAO.exe --lan-qr`。
+  - 手机 `LinkService`：蓝牙、局域网各一个连接循环，`active() = lanConn ?: btConn`；心跳两条都发（电脑每个会话有自己的看门狗），亮屏 / 息屏两条都发；**局域网的消息排进每条连接自己的写线程**（Android 不许主线程碰网络，心跳、回执是主线程发的——第一版就是因为这个一连上就断）。只在连着 Wi-Fi / 有线网时试局域网，连上 Wi-Fi 马上重试；局域网连着时拿 `WIFI_MODE_FULL_LOW_LATENCY` 锁。电脑说 `unknown` / `badToken`（解除了绑定）就标 `revoked`，不再连，提示重新扫码。扫码用 zxing-android-embedded（只加它、zxing core 和 androidx.core 本身，不带传递依赖；开了 `android.useAndroidX`），新权限 CAMERA、WAKE_LOCK、CHANGE_NETWORK_STATE（只用局域网、没给蓝牙权限时，「连接的设备」类前台服务靠它满足 Android 14 的要求）。调试：`--es debugPairFile 路径` 当作扫到了文件里的二维码内容。
+  - 实测（小米 13 在 HFUT-WiFi 10.4.x，电脑有线 10.200.x，跨网段路由可达）：扫码到连上 1.1 秒；「测延迟」局域网 一般 8 / 慢 18 / 最慢 24 ms，只有蓝牙 20 / 47 / 67 ms；电脑上解除绑定 → 局域网断、蓝牙接着用、手机显示要重新扫码 → 重新扫码恢复；手机关蓝牙只剩局域网照样已连接，开蓝牙后两条都在。二维码截图用 ZXing 解出来和状态一致。
+
+- 电脑端 0.7.10 / 手机端 0.9.9：左上角的「蒜鸟」换成画好的品牌字（用户逐轮看样稿定的）。
+  - `tools/logo/wordmark.py` 生成：字形取思源黑体 Heavy（Noto Sans SC，OFL，`tools/logo/fonts/` 里只留了这两个字和许可证），「蒜」去掉草字头的两竖（第 10、11 个轮廓，横留着）换成两棵穿过横的蒜苗，「鸟」的点（第 3 个轮廓）换成转了 -30° 的蛋。
+  - 分三层：字身（电脑 `colorize: Theme.fg`，手机 `setTint(palette.fg)`）、蒜苗（浅色 #6DB81F / 深色 #BEF264）、蛋（固定 #FFC94D，文件里就是这个色）。电脑 `pc/assets/wordmark*.svg` 用 `Wordmark` 组件（一个字 25px，原来 21px）放在主窗口和安装程序的侧栏顶上；手机 `drawable/wordmark*.xml` 叠成 `LayerDrawable`，高 26dp（一个字约 22dp，原来 18sp）。
 
 - 电脑端 0.7.9 / 手机端 0.9.8：检查更新，安装程序换成自己做的。仓库改成了公开的（Release 不用登录就能下载）。
   - 每次发版 `release.yml` 在 Release 里多放一个 `latest.json`：两端的版本号、文件名、下载地址、大小、SHA-256，`notes` 是 `CHANGELOG.md` 这一版那段里顶格的「- 」，`pc.notes` / `android.notes` 是写在「电脑端…」「手机端…」下面的（「两端一起…」下面的两端都算）。两端读 `https://github.com/drhhhao/SuanNIAO/releases/latest/download/latest.json`。
@@ -211,7 +244,7 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 - 下载的语音模型核对 SHA-256，换版本时 `release.yml` 里的地址和指纹要一起改；手机包里没带齐模型的四个文件就不发。
 - 电脑端安装包没有代码签名，Windows 第一次会提示「Windows 已保护你的电脑」，发布说明里写了怎么点过去。
 
-## 通信（蓝牙串口，每行一条 JSON）
+## 通信（蓝牙串口或局域网 TLS，每行一条 JSON，两种连接的消息一样）
 
 | 方向 | 消息 |
 |---|---|

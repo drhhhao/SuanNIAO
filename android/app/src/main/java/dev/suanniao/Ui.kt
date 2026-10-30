@@ -59,6 +59,8 @@ object Ui {
 
     /** 按下时快速收缩用这个；松手回弹用 SPRING（会冲过头一点再回来） */
     val EASE = PathInterpolator(0.2f, 0.8f, 0.2f, 1f)
+    /** 先慢后快再慢：面板收回去用（一开始就猛冲会显得「被扔掉」） */
+    val EASE_IN_OUT = PathInterpolator(0.4f, 0f, 0.2f, 1f)
     val SPRING = PathInterpolator(0.34f, 1.56f, 0.64f, 1f)
     /** 回弹小一点的：面板、对话框出现用，丝滑不「弹」 */
     val SOFT_SPRING = PathInterpolator(0.3f, 1.25f, 0.5f, 1f)

@@ -1,4 +1,4 @@
-//! 蒜鸟电脑端后台（SuanNIAO-core.exe）：托盘常驻，开蓝牙串口服务等手机连接，执行按键映射和触控板、语音文字。
+//! 蒜鸟电脑端后台（SuanNIAO-core.exe）：托盘常驻，开蓝牙串口服务（扫码绑定过手机的话还开局域网端口）等手机连接，执行按键映射和触控板、语音文字。
 //!
 //! 配置由主界面（SuanNIAO.exe）编辑、写到 `%APPDATA%\SuanNIAO\config.json`；这里每半秒看一次文件有没有变，
 //! 变了就重新读取并同步给手机。手机上调好的布局由这里校验后写回这个文件。
@@ -11,6 +11,7 @@ mod clipboard;
 mod clipimage;
 mod clipsync;
 mod input;
+mod lan;
 mod launcher;
 mod link;
 mod overlay;
@@ -79,6 +80,7 @@ fn main() {
         }
     });
     state::update_status(|_| {});
+    lan::start();
     std::thread::spawn(watch_config);
     std::thread::spawn(update::run);
     std::thread::spawn(clipsync::run);

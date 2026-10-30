@@ -17,6 +17,11 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Binder
 import android.os.Build
@@ -28,7 +33,10 @@ import android.provider.Settings
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.Closeable
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -36,7 +44,8 @@ import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /**
- * 保持和电脑的蓝牙串口连接。前台服务：息屏、切到后台都不断开，断了自动重连。
+ * 保持和电脑的连接：蓝牙串口，和扫码绑定过的电脑的局域网连接（两条可以同时连着，发消息走局域网，断了走蓝牙）。
+ * 前台服务：息屏、切到后台都不断开，断了自动重连。
  * - 连上时发 hello（手机的蓝牙名、型号、App 版本）；电量、充电状态变化时发电量
  * - 记着电脑推来的最新配置和电脑的名字、版本：界面重新打开、重新绑定时直接套用，不会露出过时的界面
  * - 发送直接写进 socket：send() 返回 true 才算真的发出去了，调用方据此给反馈（触控板的移动、滚动除外，见 move）
@@ -60,15 +69,28 @@ class LinkService : Service() {
         CONNECTED,
     }
 
-    class Status(val phase: Phase, val pcName: String?) {
+    /** lan、bt：现在哪条连接连着（两条可以同时连着） */
+    class Status(val phase: Phase, val pcName: String?, val lan: Boolean = false, val bt: Boolean = false) {
         val connected get() = phase == Phase.CONNECTED
+        /** 连着时走的是哪种：「局域网」「蓝牙」「局域网 + 蓝牙」 */
+        val via: String? get() = when {
+            lan && bt -> "局域网 + 蓝牙"
+            lan -> "局域网"
+            bt -> "蓝牙"
+            else -> null
+        }
     }
+
+    /** 局域网那条连接的情况。REVOKED：电脑上解除了这部手机的绑定，等重新扫码 */
+    enum class LanPhase { NONE, CONNECTING, WAITING, CONNECTED, REVOKED }
 
     interface Listener {
         fun onLinkStatus(status: Status)
         fun onLinkMessage(msg: JSONObject)
         /** 在手机上暂停 / 恢复按键的结果：ok = false 表示等了一阵电脑也没改（多半是旧版电脑端） */
         fun onEnableResult(ok: Boolean, enabled: Boolean)
+        /** 扫码绑定的结果；也用来提示电脑上解除了绑定 */
+        fun onPairResult(ok: Boolean, message: String) {}
     }
 
     inner class LocalBinder : Binder() {
@@ -102,10 +124,89 @@ class LinkService : Service() {
     private val binder = LocalBinder()
     private val main = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
-    /** 写 socket 的锁：界面线程的消息和写线程的移动、滚动不会交错 */
-    private val writeLock = Any()
     private val outbox = LinkedBlockingQueue<Any>()
-    @Volatile private var socket: BluetoothSocket? = null
+    /** 一条连接（蓝牙或局域网）：读写都用它的流 */
+    private class Conn(val lan: Boolean, val socket: Closeable, val input: InputStream, val output: OutputStream) {
+        @Volatile var closed = false
+        /** 发了心跳还没收到任何回音的起点（0 = 收到过了）：局域网太久没回音就当断了 */
+        @Volatile var awaitSince = 0L
+        /** 电脑 hello 里的编号（旧版电脑端没有） */
+        @Volatile var pcId: String? = null
+        /** 电脑说它正连着别的手机，马上会断开 */
+        @Volatile var busy = false
+        /**
+         * 局域网连接的发送队列：Android 不让主线程碰网络（蓝牙不管），而心跳、配置回执这些是在主线程发的，
+         * 所以局域网的消息都排进这里，由这条连接自己的写线程按顺序写出去
+         */
+        val queue: LinkedBlockingQueue<Any>? = if (lan) LinkedBlockingQueue() else null
+
+        fun close() {
+            closed = true
+            queue?.offer(STOP)
+            runCatching { socket.close() }
+        }
+
+        companion object {
+            val STOP = Any()
+        }
+    }
+    @Volatile private var btConn: Conn? = null
+    @Volatile private var lanConn: Conn? = null
+    /** 发消息走的连接：局域网优先。蓝牙连的要是另一台电脑（和扫码绑定的不是同一台），只用局域网那台 */
+    private fun active(): Conn? = lanConn ?: btConn?.takeUnless { foreign(it) }
+
+    /** 蓝牙连着的电脑和局域网连着的不是同一台：这条蓝牙只收心跳，不收配置、不发输入 */
+    private fun foreign(c: Conn): Boolean {
+        if (c.lan) return false
+        val lanPc = lanConn?.pcId ?: return false
+        return c.pcId != null && c.pcId != lanPc
+    }
+
+    // 还按着的键（直通）、鼠标键：按着期间消息都走按下时那条连接，全松开了才换。
+    // 不然按下走蓝牙、松开走刚连上的局域网，松开可能比按下先到，或者到了不认识它的会话，电脑上就一直按着
+    private val holdLock = Any()
+    private val heldKeys = HashSet<String>()
+    private val heldButtons = HashSet<String>()
+    private var pinned: Conn? = null
+
+    /** 这条消息走哪条连接（顺便记下按住、松开）；msg 为空 = 移动、滚动 */
+    private fun route(msg: JSONObject?): Conn? = synchronized(holdLock) {
+        val pin = pinned?.takeIf { !it.closed && !foreign(it) }
+        val c = pin ?: active()
+        if (msg != null) when (msg.optString("t")) {
+            "hold" -> msg.optString("id").let { if (msg.optBoolean("down")) heldKeys += it else heldKeys -= it }
+            "mouse" -> when (msg.optString("a")) {
+                "down" -> heldButtons += msg.optString("b")
+                "up" -> heldButtons -= msg.optString("b")
+            }
+        }
+        pinned = if (heldKeys.isEmpty() && heldButtons.isEmpty()) null else (pin ?: c)
+        c
+    }
+
+    /** 全松开了（息屏）：下一条消息可以换连接 */
+    private fun clearHolds() = synchronized(holdLock) {
+        heldKeys.clear()
+        heldButtons.clear()
+        pinned = null
+    }
+    @Volatile private var btPhase = Phase.OFF
+    @Volatile var lanPhase = LanPhase.NONE
+        private set
+    /** 局域网绑定的电脑名 */
+    @Volatile private var lanPcName: String? = null
+    private val lanKicks = LinkedBlockingQueue<Unit>()
+    @Volatile private var lanBackoff = 1000L
+    @Volatile private var lanQuiet = false
+    private var wifiLock: WifiManager.WifiLock? = null
+    /** 连上 Wi-Fi 时马上试局域网，不用等重试 */
+    private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            lanBackoff = 1000L
+            lanQuiet = false
+            lanKicks.offer(Unit)
+        }
+    }
     @Volatile private var running = false
     /** 每次开始连接循环加一：旧的循环看到不一样就自己退出 */
     @Volatile private var loopGen = 0
@@ -152,12 +253,13 @@ class LinkService : Service() {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenOn = false
-                    send(JSONObject().put("t", "release"))
-                    send(JSONObject().put("t", "state").put("screen", "off"))
+                    sendAll(JSONObject().put("t", "release"))
+                    clearHolds()
+                    sendAll(JSONObject().put("t", "state").put("screen", "off"))
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     screenOn = true
-                    send(JSONObject().put("t", "state").put("screen", "on"))
+                    sendAll(JSONObject().put("t", "state").put("screen", "on"))
                 }
             }
         }
@@ -170,10 +272,25 @@ class LinkService : Service() {
         }
     }
 
-    /** 亮屏时每秒一次心跳，顺便测往返延迟。息屏时不发，电脑也不会因此断开。 */
+    /**
+     * 亮屏时每秒一次心跳，顺便测往返延迟（两条连接都发：电脑那边每条连接各有看门狗）。息屏时不发，电脑也不会因此断开。
+     * 局域网发了心跳 4.5 秒都没收到任何回音就当它断了、关掉，消息改走蓝牙：电脑换了网络、拔了网线时，
+     * 手机这边的 socket 不会报错，要等系统重传十几分钟才放弃
+     */
     private val heartbeat = object : Runnable {
         override fun run() {
-            if (connected && screenOn) sendPing()
+            if (screenOn) {
+                lanConn?.let { c ->
+                    val since = c.awaitSince
+                    if (since != 0L && SystemClock.elapsedRealtime() - since > LAN_DEAD_MS) {
+                        Log.w(TAG, "lan: ${LAN_DEAD_MS / 1000.0} 秒没回音，断开")
+                        c.close()
+                    } else {
+                        sendPing(c)
+                    }
+                }
+                btConn?.let { sendPing(it) }
+            }
             main.postDelayed(this, 1000)
         }
     }
@@ -208,6 +325,11 @@ class LinkService : Service() {
                 lastConfig = it
                 paused = it.optBoolean("paused", false)
             }
+        }
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)?.registerNetworkCallback(
+                NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), wifiCallback,
+            )
         }
         thread(name = "link-writer", isDaemon = true) { writeLoop() }
         main.post(heartbeat)
@@ -244,7 +366,7 @@ class LinkService : Service() {
         if (!running) {
             startLoop()
         } else if (changed) {
-            socket?.let { runCatching { it.close() } } // 换了电脑：断开旧连接，马上连新的
+            btConn?.close() // 换了电脑：断开旧的蓝牙连接，马上连新的
             retryNow()
         }
         when (intent?.action) {
@@ -270,7 +392,10 @@ class LinkService : Service() {
         running = false
         loopGen++
         kicks.offer(Unit)
-        socket?.let { runCatching { it.close() } }
+        lanKicks.offer(Unit)
+        btConn?.close()
+        lanConn?.close()
+        holdWifi(false)
         setPhase(Phase.OFF, null)
         foreground = false
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -282,6 +407,9 @@ class LinkService : Service() {
         backoff = 1000L
         quiet = false
         kicks.offer(Unit)
+        lanBackoff = 1000L
+        lanQuiet = false
+        lanKicks.offer(Unit)
     }
 
     override fun onDestroy() {
@@ -293,7 +421,11 @@ class LinkService : Service() {
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching { unregisterReceiver(batteryReceiver) }
         runCatching { unregisterReceiver(bluetoothReceiver) }
-        socket?.let { runCatching { it.close() } }
+        runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(wifiCallback) }
+        lanKicks.offer(Unit)
+        btConn?.close()
+        lanConn?.close()
+        holdWifi(false)
         super.onDestroy()
     }
 
@@ -301,19 +433,43 @@ class LinkService : Service() {
 
     /** 发一条消息：直接写进 socket，写进去了才返回 true。没连上、写失败都返回 false（写失败会断开重连） */
     fun send(msg: JSONObject): Boolean {
-        val s = socket
-        if (!connected || s == null) return false
-        return write(s, msg.toString())
+        val c = route(msg) ?: return false
+        return write(c, msg.toString())
     }
 
-    private fun write(s: BluetoothSocket, line: String): Boolean = synchronized(writeLock) {
+    /** 两条连接都发（亮屏、息屏这种每个会话都要知道的） */
+    private fun sendAll(msg: JSONObject) {
+        val line = msg.toString()
+        lanConn?.let { write(it, line) }
+        btConn?.let { write(it, line) }
+    }
+
+    /** 每条连接一把写锁：界面线程的消息和写线程的移动、滚动不会交错；蓝牙写得慢时不耽误局域网 */
+    private fun write(c: Conn, line: String): Boolean {
+        val queue = c.queue ?: return writeNow(c, line)
+        if (c.closed) return false
+        queue.offer(line)
+        return true
+    }
+
+    /** 局域网连接的写线程：一条一条写出去，写不出去就关掉连接（读循环会发现并重连） */
+    private fun lanWriter(c: Conn) {
+        val queue = c.queue ?: return
+        while (!c.closed) {
+            val item = queue.take()
+            if (item === Conn.STOP || c.closed) return
+            if (!writeNow(c, item as String)) return
+        }
+    }
+
+    private fun writeNow(c: Conn, line: String): Boolean = synchronized(c) {
         try {
-            s.outputStream.write((line + "\n").toByteArray(Charsets.UTF_8))
-            s.outputStream.flush()
+            c.output.write((line + "\n").toByteArray(Charsets.UTF_8))
+            c.output.flush()
             true
         } catch (e: Exception) {
             Log.w(TAG, "write failed: ${e.message}")
-            runCatching { s.close() } // 读循环会发现断开并重连
+            c.close() // 读循环会发现断开并重连
             false
         }
     }
@@ -340,7 +496,7 @@ class LinkService : Service() {
         if (!connected) return
         synchronized(accLock) {
             openMove = null // 之后的移动另起一批，排在这条后面
-            outbox.add(msg.toString())
+            outbox.add(msg)
         }
     }
 
@@ -379,7 +535,7 @@ class LinkService : Service() {
     fun latencyBurst(count: Int) {
         thread(isDaemon = true) {
             repeat(count) {
-                sendPing()
+                active()?.let { sendPing(it) }
                 SystemClock.sleep(20)
             }
         }
@@ -401,8 +557,9 @@ class LinkService : Service() {
         return values[values.size / 2]
     }
 
-    private fun sendPing() {
-        send(JSONObject().put("t", "ping").put("id", ++pingId).put("ts", SystemClock.elapsedRealtime()))
+    private fun sendPing(c: Conn) {
+        if (c.awaitSince == 0L) c.awaitSince = SystemClock.elapsedRealtime()
+        write(c, JSONObject().put("t", "ping").put("id", ++pingId).put("ts", SystemClock.elapsedRealtime()).toString())
     }
 
     @Synchronized
@@ -420,15 +577,26 @@ class LinkService : Service() {
         val gen = ++loopGen
         running = true
         quiet = false
+        lanQuiet = false
         backoff = 1000L
+        lanBackoff = 1000L
         kicks.clear()
+        lanKicks.clear()
         thread(name = "link-connect", isDaemon = true) { connectLoop(gen) }
+        thread(name = "lan-connect", isDaemon = true) { lanLoop(gen) }
     }
 
     /** 等 ms 毫秒，「重试」能提前叫醒 */
-    private fun nap(ms: Long) {
-        kicks.poll(ms, TimeUnit.MILLISECONDS)
-        kicks.clear()
+    private fun nap(ms: Long, queue: LinkedBlockingQueue<Unit> = kicks) {
+        queue.poll(ms, TimeUnit.MILLISECONDS)
+        queue.clear()
+    }
+
+    /** 新连上一条：先报 hello、亮屏状态、电量（每条连接都报，电脑那边每条连接是一个会话） */
+    private fun greet(c: Conn) {
+        write(c, hello().toString())
+        write(c, JSONObject().put("t", "state").put("screen", if (screenOn) "on" else "off").toString())
+        if (batteryLevel >= 0) write(c, JSONObject().put("t", "battery").put("level", batteryLevel).put("charging", batteryCharging).toString())
     }
 
     @SuppressLint("MissingPermission")
@@ -438,59 +606,234 @@ class LinkService : Service() {
             val target = address
             val adapter = getSystemService(BluetoothManager::class.java)?.adapter
             if (target == null) {
-                setPhase(Phase.NO_DEVICE, null)
+                setBt(Phase.NO_DEVICE)
                 nap(1500)
                 continue
             }
             if (!hasBluetoothPermission()) {
-                setPhase(Phase.NO_PERMISSION, null)
+                setBt(Phase.NO_PERMISSION)
                 nap(2000)
                 continue
             }
             if (adapter == null || !adapter.isEnabled) {
-                setPhase(Phase.BT_OFF, null)
+                setBt(Phase.BT_OFF)
                 nap(3000)
                 continue
             }
             var s: BluetoothSocket? = null
+            var c: Conn? = null
             try {
                 val device = adapter.getRemoteDevice(target)
                 val name = device.name ?: target
                 deviceName = name
-                if (!quiet) setPhase(Phase.CONNECTING, name)
+                if (!quiet) setBt(Phase.CONNECTING)
                 s = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
                 s.connect()
                 if (!alive()) break
-                socket = s
-                connected = true
+                c = Conn(false, s, s.inputStream, s.outputStream)
+                btConn = c
                 backoff = 1000L
                 quiet = false
-                send(hello())
-                send(JSONObject().put("t", "state").put("screen", if (screenOn) "on" else "off"))
-                sendBattery()
-                setPhase(Phase.CONNECTED, name)
-                readLoop(s)
+                greet(c)
+                setBt(Phase.CONNECTED)
+                readLoop(c)
+                if (c.busy) backoff = BUSY_BACKOFF_MS
             } catch (e: Exception) {
                 Log.w(TAG, "connect: ${e.message ?: e.javaClass.simpleName}")
             } finally {
-                if (socket === s && s != null) {
-                    connected = false
-                    socket = null
-                    main.post { onDisconnected() }
+                if (c != null && btConn === c) {
+                    btConn = null
+                    linkLost()
                 }
                 s?.let { runCatching { it.close() } }
             }
             if (!alive()) break
             quiet = true
-            setPhase(Phase.WAITING, deviceName)
+            setBt(Phase.WAITING)
             nap(backoff)
             backoff = minOf(backoff * 2, 10_000L)
         }
     }
 
+    /**
+     * 局域网：扫码绑定过电脑就一直试着连（只在连着 Wi-Fi / 有线网时试），先试上次连上的地址。
+     * 电脑说不认识这部手机了（电脑上解除了绑定）就停下，等重新扫码。
+     */
+    private fun lanLoop(gen: Int) {
+        fun alive() = running && gen == loopGen
+        while (alive()) {
+            val binding = LanBinding.load(this)
+            if (binding == null || binding.revoked) {
+                setLan(if (binding?.revoked == true) LanPhase.REVOKED else LanPhase.NONE, binding?.name)
+                nap(5000, lanKicks)
+                continue
+            }
+            if (!onLocalNetwork()) {
+                setLan(LanPhase.WAITING, binding.name)
+                nap(5000, lanKicks)
+                continue
+            }
+            val token = LanSecure.open(this, binding.sealedToken)
+            if (token == null) {
+                // 令牌解不开（比如系统清掉了密钥）：只能重新扫码
+                LanBinding.updateIfSame(this, binding) { it.copy(revoked = true) }
+                continue
+            }
+            if (!lanQuiet) setLan(LanPhase.CONNECTING, binding.name)
+            var c: Conn? = null
+            var socket: javax.net.ssl.SSLSocket? = null
+            try {
+                var lastError: Exception? = null
+                for (addr in binding.tryOrder()) {
+                    if (!alive()) return
+                    try {
+                        val s = LanSecure.connect(addr, binding.port, binding.fp, LAN_CONNECT_TIMEOUT_MS, localNetwork())
+                        try {
+                            LanSecure.auth(s, binding.phoneId, token)
+                        } catch (e: Exception) {
+                            runCatching { s.close() }
+                            throw e
+                        }
+                        socket = s
+                        if (addr != binding.lastAddr) LanBinding.updateIfSame(this, binding) { it.copy(lastAddr = addr) }
+                        break
+                    } catch (e: LanAuthException) {
+                        if (e.reason == "unknown" || e.reason == "badToken") {
+                            Log.w(TAG, "lan: 电脑不认这部手机了（${e.reason}）")
+                            LanBinding.updateIfSame(this, binding) { it.copy(revoked = true) }
+                            main.post { listener?.onPairResult(false, "「${binding.name}」上解除了这部手机的绑定，要用局域网的话重新扫码") }
+                        }
+                        lastError = e
+                        break
+                    } catch (e: Exception) {
+                        lastError = e
+                    }
+                }
+                val s = socket ?: throw lastError ?: java.io.IOException("no address")
+                if (!alive()) return
+                // 连的时候重新扫了别的电脑、或者解除了绑定：这条不要了
+                val now = LanBinding.load(this)
+                if (now == null || now.pc != binding.pc || now.phoneId != binding.phoneId) throw java.io.IOException("binding changed")
+                c = Conn(true, s, s.inputStream, s.outputStream)
+                val conn = c
+                thread(name = "lan-writer", isDaemon = true) { lanWriter(conn) }
+                lanConn = c
+                lanPcName = binding.name
+                lanBackoff = 1000L
+                lanQuiet = false
+                greet(c)
+                setLan(LanPhase.CONNECTED, binding.name)
+                holdWifi(true)
+                readLoop(c)
+                if (c.busy) {
+                    Log.w(TAG, "lan: 电脑正连着另一部手机")
+                    lanBackoff = BUSY_BACKOFF_MS
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "lan: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                if (c != null && lanConn === c) {
+                    lanConn = null
+                    holdWifi(false)
+                    linkLost()
+                }
+                socket?.let { runCatching { it.close() } }
+            }
+            if (!alive()) break
+            lanQuiet = true
+            setLan(LanPhase.WAITING, binding.name)
+            nap(lanBackoff, lanKicks)
+            lanBackoff = minOf(lanBackoff * 2, maxOf(lanBackoff, 10_000L))
+        }
+    }
+
+    /** 连着 Wi-Fi 或有线网（只用流量时连不到局域网里的电脑，不白试） */
+    private fun onLocalNetwork(): Boolean {
+        if (getSystemService(ConnectivityManager::class.java) == null) return true
+        return localNetwork() != null
+    }
+
+    /** Wi-Fi 或有线网（不是 VPN 那层）：局域网的 socket 绑在它上面 */
+    private fun localNetwork(): Network? {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return null
+        return cm.allNetworks.firstOrNull { n ->
+            val caps = cm.getNetworkCapabilities(n) ?: return@firstOrNull false
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+        }
+    }
+
+    /** 局域网连着时让 Wi-Fi 别省电（省电时延迟会忽然跳到上百毫秒）；断了就放开 */
+    private fun holdWifi(on: Boolean) {
+        if (Build.VERSION.SDK_INT < 29) return
+        synchronized(this) {
+            if (on) {
+                val lock = wifiLock ?: runCatching {
+                    getSystemService(WifiManager::class.java)?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "SuanNIAO:lan")
+                        ?.apply { setReferenceCounted(false) }
+                }.getOrNull()
+                wifiLock = lock
+                runCatching { lock?.acquire() }
+            } else {
+                runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+            }
+        }
+    }
+
+    /** 扫到了电脑上的二维码：去配对，成了就记下这台电脑，局域网马上用它连。结果通过 onPairResult 告诉界面 */
+    fun pairWith(qr: LanQr) {
+        if (!running) startLoop()
+        thread(name = "lan-pair", isDaemon = true) {
+            var lastError: Exception? = null
+            // 同一台电脑重新扫码：带上原来的编号和令牌，电脑把旧记录换掉，不在手机列表里多出一条
+            val prev = LanBinding.load(this)?.takeIf { it.pc == qr.pc }?.let { old ->
+                LanSecure.open(this, old.sealedToken)?.let { old.phoneId to it }
+            }
+            for (addr in qr.addrs) {
+                try {
+                    val s = LanSecure.connect(addr, qr.port, qr.fp, PAIR_CONNECT_TIMEOUT_MS, localNetwork())
+                    val paired = try {
+                        LanSecure.pair(s, qr.code, phoneName(), modelName(), prev)
+                    } finally {
+                        runCatching { s.close() }
+                    }
+                    val sealed = LanSecure.seal(this, paired.token)
+                    LanBinding.save(this, LanBinding(qr.pc, qr.name, qr.addrs, qr.port, qr.fp, paired.phoneId, sealed, lastAddr = addr))
+                    lanConn?.close() // 原来连着另一台电脑：换成这台
+                    retryNow()
+                    main.post { listener?.onPairResult(true, "已绑定「${qr.name}」，以后在同一个网络里会自动连上") }
+                    return@thread
+                } catch (e: LanAuthException) {
+                    lastError = e
+                    if (e.reason == "badCode") break
+                } catch (e: Exception) {
+                    Log.w(TAG, "pair $addr: ${e.message ?: e.javaClass.simpleName}")
+                    lastError = e
+                }
+            }
+            val message = when {
+                (lastError as? LanAuthException)?.reason == "badCode" -> "二维码过期了或者已经用过：在电脑上重新点「显示二维码」再扫"
+                !onLocalNetwork() -> "手机没连 Wi-Fi：连上和电脑同一个网络再扫"
+                else -> "连不上这台电脑：手机和电脑要连着同一个网络；也看看电脑的防火墙有没有拦住蒜鸟"
+            }
+            main.post { listener?.onPairResult(false, message) }
+        }
+    }
+
+    /** 解除局域网绑定（只在手机上忘掉这台电脑；电脑上的记录在电脑的设置里删） */
+    fun forgetLan() {
+        LanBinding.save(this, null)
+        lanConn?.close()
+        lanKicks.offer(Unit)
+    }
+
+    private fun linkLost() {
+        main.post { onDisconnected() }
+    }
+
     private fun onDisconnected() {
-        // 暂停 / 恢复的请求随连接一起没了
-        if (pendingEnabled != null) {
+        // 暂停 / 恢复的请求随连接一起没了（另一条还连着就不算）
+        if (pendingEnabled != null && !connected) {
             pendingEnabled = null
             main.removeCallbacks(enableTimeout)
         }
@@ -499,8 +842,10 @@ class LinkService : Service() {
     /** 手机的名字：蓝牙名（比如「少爷的mi13」），拿不到用设备名，再不行用型号 */
     @SuppressLint("MissingPermission")
     private fun phoneName(): String {
-        runCatching { getSystemService(BluetoothManager::class.java)?.adapter?.name }.getOrNull()
-            ?.takeIf { it.isNotBlank() }?.let { return it }
+        if (hasBluetoothPermission()) {
+            runCatching { getSystemService(BluetoothManager::class.java)?.adapter?.name }.getOrNull()
+                ?.takeIf { it.isNotBlank() }?.let { return it }
+        }
         runCatching { Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME) }.getOrNull()
             ?.takeIf { it.isNotBlank() }?.let { return it }
         return Build.MODEL
@@ -513,18 +858,34 @@ class LinkService : Service() {
                 .invoke(null, "ro.product.marketname") as String
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: Build.MODEL
 
+    /** lan：扫码绑定时电脑给的手机编号，电脑靠它认出蓝牙、局域网连上来的是不是同一部手机 */
     private fun hello() = JSONObject()
         .put("t", "hello")
         .put("device", phoneName())
         .put("model", modelName())
         .put("app", BuildConfig.VERSION_NAME)
+        .put("lan", LanBinding.load(this)?.takeUnless { it.revoked }?.phoneId)
 
-    private fun readLoop(s: BluetoothSocket) {
-        val reader = BufferedReader(InputStreamReader(s.inputStream, Charsets.UTF_8))
+    private fun readLoop(c: Conn) {
+        val reader = BufferedReader(InputStreamReader(c.input, Charsets.UTF_8))
         while (true) {
             val line = reader.readLine() ?: return
+            c.awaitSince = 0L
             val msg = runCatching { JSONObject(line) }.getOrNull() ?: continue
-            if (msg.optString("t") == "pong") recordRtt(SystemClock.elapsedRealtime() - msg.optLong("ts"))
+            when (msg.optString("t")) {
+                "pong" -> {
+                    // 两条连接都发心跳（电脑从收到的那条回）；延迟只记现在发消息走的那条
+                    if (c === active()) recordRtt(SystemClock.elapsedRealtime() - msg.optLong("ts"))
+                    continue
+                }
+                "busy" -> {
+                    c.busy = true
+                    continue
+                }
+                "hello" -> c.pcId = msg.optString("pc").ifBlank { null }
+            }
+            // 蓝牙连的是另一台电脑：它的配置、提示不要（布局会来回跳）
+            if (foreign(c)) continue
             main.post { onMessage(msg) }
         }
     }
@@ -553,6 +914,7 @@ class LinkService : Service() {
                 if (changed) updateNotification()
                 if (listener == null) ackConfig(msg)
             }
+            "lan" -> updateLanAddress(msg)
             "clip" -> if (ClipSync.enabled(lastConfig)) ClipSync.receive(this, msg.optString("s"))
             "clipImg" -> if (ClipSync.enabled(lastConfig)) ClipSync.imageStart(this, msg)
             "clipImgPart" -> ClipSync.imagePart(msg)
@@ -561,6 +923,22 @@ class LinkService : Service() {
             "clipImgEnd" -> ClipSync.imageEnd(this, msg)?.let { msg.put("ok", it) }
         }
         listener?.onLinkMessage(msg)
+    }
+
+    /** 电脑说它现在的局域网地址（地址变了、刚连上时发）：是绑定的那台、证书也一样，就记下新地址 */
+    private fun updateLanAddress(msg: JSONObject) {
+        val list = msg.optJSONArray("addrs") ?: return
+        val addrs = (0 until list.length()).map { list.optString(it) }.filter { it.isNotBlank() }
+        val port = msg.optInt("port", 0)
+        if (addrs.isEmpty() || port !in 1..65535) return
+        var changed = false
+        LanBinding.update(this) { cur ->
+            if (cur == null || msg.optString("pc") != cur.pc || msg.optString("fp") != cur.fp) return@update cur
+            if (addrs == cur.addrs && port == cur.port) return@update cur
+            changed = true
+            cur.copy(addrs = addrs, port = port)
+        }
+        if (changed && lanConn == null) lanKicks.offer(Unit)
     }
 
     private fun writeLoop() {
@@ -581,27 +959,60 @@ class LinkService : Service() {
                 }
                 else -> item.toString()
             }
-            val s = socket ?: continue
-            if (connected) write(s, line)
+            val c = route(item as? JSONObject) ?: continue
+            write(c, line)
         }
     }
 
     // ───────── 状态和通知 ─────────
 
-    private fun setPhase(phase: Phase, pc: String?) {
+    private fun setBt(phase: Phase) {
+        btPhase = phase
+        recompute()
+    }
+
+    private fun setLan(phase: LanPhase, name: String?) {
+        lanPhase = phase
+        if (name != null) lanPcName = name
+        recompute()
+    }
+
+    /**
+     * 两条连接合成一个状态给界面和通知：有一条连着就是已连接（名字用局域网那台）；
+     * 都没连着时，蓝牙用不了（没选电脑、没权限、蓝牙关着）而局域网绑定过，就报局域网的情况
+     */
+    @Synchronized
+    private fun recompute() {
+        val lanOn = lanConn != null
+        val btOn = btConn != null
+        connected = lanOn || btOn
+        if (!running) return
+        val lanUsable = lanPhase == LanPhase.CONNECTING || lanPhase == LanPhase.WAITING || lanPhase == LanPhase.CONNECTED
+        val btUnusable = btPhase == Phase.NO_DEVICE || btPhase == Phase.NO_PERMISSION || btPhase == Phase.BT_OFF || btPhase == Phase.OFF
+        val (phase, pc) = when {
+            lanOn -> Phase.CONNECTED to lanPcName
+            btOn -> Phase.CONNECTED to deviceName
+            !lanUsable -> btPhase to deviceName
+            btUnusable -> (if (lanPhase == LanPhase.CONNECTING) Phase.CONNECTING else Phase.WAITING) to lanPcName
+            else -> (if (btPhase == Phase.CONNECTING || lanPhase == LanPhase.CONNECTING) Phase.CONNECTING else Phase.WAITING) to (deviceName ?: lanPcName)
+        }
+        setPhase(phase, pc, lanOn, btOn)
+    }
+
+    private fun setPhase(phase: Phase, pc: String?, lan: Boolean = false, bt: Boolean = false) {
         val old = status
-        if (old.phase == phase && old.pcName == pc) return
-        val s = Status(phase, pc)
+        if (old.phase == phase && old.pcName == pc && old.lan == lan && old.bt == bt) return
+        val s = Status(phase, pc, lan, bt)
         status = s
         updateNotification()
         main.post { listener?.onLinkStatus(s) }
     }
 
-    /** 电脑的名字：电脑 hello 里说的，没有就用蓝牙名 */
-    fun pcLabel(): String? = pcHost ?: deviceName
+    /** 电脑的名字：电脑 hello 里说的，没有就用局域网绑定时的名字、蓝牙名 */
+    fun pcLabel(): String? = pcHost ?: (if (lanConn != null) lanPcName else null) ?: deviceName ?: lanPcName
 
     private fun notificationText(): String = when (status.phase) {
-        Phase.CONNECTED -> "已连接 · ${pcLabel() ?: "电脑"}" + if (paused) " · 按键已暂停" else ""
+        Phase.CONNECTED -> "已连接 · ${pcLabel() ?: "电脑"}" + (status.via?.let { " · $it" } ?: "") + if (paused) " · 按键已暂停" else ""
         Phase.CONNECTING -> "正在连接…"
         Phase.WAITING -> "未连接电脑 · 正在重试"
         Phase.NO_DEVICE -> "还没选电脑"
@@ -667,6 +1078,13 @@ class LinkService : Service() {
         private const val NOTIFY_ID = 1
         /** 请求暂停 / 恢复后最多等这么久电脑推来新配置 */
         private const val ENABLE_TIMEOUT_MS = 4000L
+        /** 局域网每个地址连接 + 握手最多等多久；扫码配对时多给一点 */
+        private const val LAN_CONNECT_TIMEOUT_MS = 2500
+        private const val PAIR_CONNECT_TIMEOUT_MS = 4000
+        /** 局域网发了心跳这么久没收到任何回音就当断了（亮屏时每秒一次心跳，正常几毫秒就回） */
+        private const val LAN_DEAD_MS = 4500L
+        /** 电脑说正连着另一部手机：隔久一点再试，别和那部来回抢 */
+        private const val BUSY_BACKOFF_MS = 30_000L
         /** 和电脑端 link.rs 里的 SERVICE_UUID 一致。 */
         val SERVICE_UUID: UUID = UUID.fromString("5f6a1c2e-8b3d-4e7f-9a10-2b3c4d5e6f70")
 

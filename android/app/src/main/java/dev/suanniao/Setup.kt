@@ -36,6 +36,8 @@ class Setup(private val host: Host, private val overlays: Overlays) {
         fun savedName(): String?
         fun chooseComputer(address: String, name: String)
         fun finishOnboarding()
+        /** 扫电脑上的二维码，用局域网连（不用蓝牙） */
+        fun scanComputer() {}
     }
 
     private val context get() = host.context
@@ -88,20 +90,33 @@ class Setup(private val host: Host, private val overlays: Overlays) {
     /** 只列配对过的电脑；打开「显示全部设备」后耳机、手环也列出来。当前选的排最前、打勾 */
     @SuppressLint("MissingPermission")
     fun showPicker(onPick: (address: String, name: String) -> Unit) {
-        if (!host.hasBluetoothPermission()) {
-            host.askBluetoothPermission()
-            return
-        }
         lateinit var sheet: Overlays.Sheet
+        // 扫码不用蓝牙：没权限、蓝牙没开、手机没蓝牙时也要能点到
+        fun Overlays.Sheet.scanRow() {
+            row("扫码连接电脑", "不用蓝牙：手机和电脑连着同一个网络，扫电脑上的二维码") {
+                sheet.dismiss()
+                host.scanComputer()
+            }
+        }
         sheet = overlays.sheet build@{
-            val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
             header("选择电脑", "列的是和这部手机配对过的电脑")
+            if (!host.hasBluetoothPermission()) {
+                row("允许「附近的设备」权限", "用蓝牙连电脑要这个权限") {
+                    sheet.dismiss()
+                    host.askBluetoothPermission()
+                }
+                scanRow()
+                return@build
+            }
+            val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
             if (adapter == null) {
                 row("这部手机没有蓝牙", null, enabled = false, trailing = null, onClick = null)
+                scanRow()
                 return@build
             }
             if (!adapter.isEnabled) {
                 row("手机蓝牙没开", "打开以后回到这里", trailing = overlays.chevron()) { host.openBluetoothSettings() }
+                scanRow()
                 return@build
             }
             val current = host.savedAddress()
@@ -130,6 +145,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
                 sheet.body.postDelayed({ sheet.refresh() }, 180)
             }
             row("去蓝牙设置配对新电脑", null) { host.openBluetoothSettings() }
+            scanRow()
         }
     }
 

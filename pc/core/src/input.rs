@@ -368,6 +368,11 @@ pub fn release_keys(vks: &[u16], generation: u64) {
     send(&ups);
 }
 
+/// 现在的直通代数：全部松开过一次就加一（hold_keys 返回的旧代数作废）
+pub fn hold_generation() -> u64 {
+    KEYS.lock().unwrap().generation
+}
+
 /// 松开所有直通按着的键（倒序）
 pub fn release_keys_all() {
     let mut keys = KEYS.lock().unwrap();

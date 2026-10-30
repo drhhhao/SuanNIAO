@@ -1,6 +1,6 @@
 [package]
 name = "suanniao-ui"
-version = "0.7.9"
+version = "0.7.13"
 edition = "2021"
 description = "蒜鸟电脑端主界面：编辑手机布局、按键映射和设置"
 build = "build.rs"
@@ -13,6 +13,8 @@ path = "src/main.rs"
 suanniao-config = { path = "../config" }
 suanniao-update = { path = "../update" }
 serde_json = "1"
+# 扫码绑定手机的二维码（只要编码，不要画图的依赖）
+qrcode = { version = "0.14", default-features = false }
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06"] }
 raw-window-handle = "0.6"
 

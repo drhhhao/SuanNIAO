@@ -69,6 +69,14 @@ export struct KeyOption {
 }
 
 // 导入遥控器映射的预览：一个遥控器键
+// 设置页「局域网连接」里一部扫码绑定过的手机
+export struct LanPhoneRow {
+    id: string,
+    name: string,
+    detail: string,
+    online: bool,
+}
+
 export struct ImportRow {
     // 键上的字（手机上显示的）
     label: string,
@@ -369,6 +377,31 @@ component Icon inherits Rectangle {
         source: root.source;
         colorize: root.tint;
         image-fit: contain;
+    }
+}
+
+// 左上角的品牌字「蒜鸟」：三层叠起来，字身跟着深浅色，蒜苗绿色，蛋固定蛋黄色（tools/logo/wordmark.py 生成）
+component Wordmark inherits Rectangle {
+    // 一个字的大小（字号）
+    in property <length> em: 25px;
+    width: root.em * 1.955;
+    height: root.em * 1.162;
+    Image {
+        width: 100%;
+        height: 100%;
+        source: @image-url("../../assets/wordmark.svg");
+        colorize: Theme.fg;
+    }
+    Image {
+        width: 100%;
+        height: 100%;
+        source: @image-url("../../assets/wordmark-sprouts.svg");
+        colorize: Theme.dark ? #bef264 : #6db81f;
+    }
+    Image {
+        width: 100%;
+        height: 100%;
+        source: @image-url("../../assets/wordmark-egg.svg");
     }
 }
 
@@ -1280,9 +1313,12 @@ component SettingRow inherits Rectangle {
                 font-weight: 500;
                 overflow: elide;
             }
-            if root.note != "": Muted {
+            // 说明只占一行，放不下就省略：Slint 1.18 在滚动区里改窗口宽度后，折行文字的高度不跟着重算，会盖到下一行
+            if root.note != "": Text {
                 text: root.note;
+                color: Theme.mut;
                 font-size: 11.5px;
+                overflow: elide;
             }
         }
         @children
@@ -1968,7 +2004,7 @@ component HomePage inherits Page {
                     padding-right: 16px;
                     padding-bottom: 12px;
                     if !root.core-running: Muted {
-                        text: "后台（任务栏托盘里的蒜鸟）没在运行，手机连不上来。";
+                        text: "后台没在运行，手机连不上。";
                         font-size: 12.5px;
                     }
                     CheckRow {
@@ -1984,7 +2020,7 @@ component HomePage inherits Page {
                     CheckRow {
                         state: -1;
                         title: "手机上打开蒜鸟";
-                        note: "打开 App 就会自动连过来；第一次要在 App 里选这台电脑。";
+                        note: "第一次要在 App 里选这台电脑";
                     }
                     HorizontalLayout {
                         padding-top: 4px;
@@ -2022,13 +2058,13 @@ component HomePage inherits Page {
                         padding-top: 6px;
                         spacing: 4px;
                         Muted {
-                            text: "· 电脑：「设置 → 蓝牙和其他设备」里打开蓝牙，和手机配对（手机的蓝牙设置里能看到这台电脑）。";
+                            text: "· 电脑：在「设置 → 蓝牙和其他设备」里打开蓝牙，和手机配对。";
                         }
                         Muted {
-                            text: "· 手机：打开蒜鸟，在右上角「···」菜单里「选择电脑」，选这台电脑。";
+                            text: "· 手机：打开蒜鸟，右上角「···」→「选择电脑」。";
                         }
                         Muted {
-                            text: "· 还是不行：手机和电脑的蓝牙都关掉再打开；或者在托盘图标上右键「退出」，再打开蒜鸟。";
+                            text: "· 还不行：两边蓝牙关了再开，或退出蒜鸟再打开。";
                         }
                     }
                 }
@@ -2207,7 +2243,7 @@ component HomePage inherits Page {
                             first: i == 0;
                         }
                         if root.recent.length == 0: Text {
-                            text: "在手机上按键、说话，这里会显示最近做了什么。";
+                            text: "手机上的操作会显示在这里。";
                             color: Theme.mut;
                             font-size: 12.5px;
                             height: 80px;
@@ -2383,7 +2419,7 @@ component LayoutPage inherits Page {
         spacing: 12px;
         PageHead {
             title: "布局";
-            note: "拖动模块换位置，拖到别的模块上互换，拖边、角改大小；改完自动保存，手机上马上能看到";
+            note: "拖动换位置，拖边角改大小，自动保存";
         }
         // 页面标签单独一行（页面多了折到下一行，不挤标题）
         FlexboxLayout {
@@ -2691,7 +2727,7 @@ component LayoutPage inherits Page {
                             padding-right: 16px;
                             padding-bottom: 16px;
                             Muted {
-                                text: "点左边手机画面里的模块来编辑。拖中间换位置，拖到别的模块上互换；选中后拖四条边、四个角改大小，默认对齐 1/4 格，按住 Alt 可以随意调。";
+                                text: "点左边的模块来编辑；按住 Alt 拖动可以不对齐格子。";
                                 font-size: 13px;
                             }
                         }
@@ -2814,7 +2850,7 @@ component LayoutPage inherits Page {
                                     width: 84px;
                                 }
                                 Muted {
-                                    text: "单位是格，可以有小数，输入后按回车。加减一次 1/4 格，最小 0.5 格。";
+                                    text: "单位是格，回车生效，最小 0.5 格。";
                                     horizontal-stretch: 1;
                                 }
                             }
@@ -2907,7 +2943,7 @@ component LayoutPage inherits Page {
                                 PaletteItem {
                                     k: "button";
                                     title: "按键";
-                                    note: "单击、双击、长按各做一件事";
+                                    note: "三种按法";
                                     clicked => {
                                         root.add-module(0);
                                     }
@@ -2915,7 +2951,7 @@ component LayoutPage inherits Page {
                                 PaletteItem {
                                     k: "touchpad";
                                     title: "触控板";
-                                    note: "单指移动，双指滚动";
+                                    note: "移动、滚动";
                                     clicked => {
                                         root.add-module(1);
                                     }
@@ -2926,7 +2962,7 @@ component LayoutPage inherits Page {
                                 PaletteItem {
                                     k: "voiceButton";
                                     title: "语音按钮";
-                                    note: "按住说话，松手发送";
+                                    note: "按住说话";
                                     clicked => {
                                         root.add-module(3);
                                     }
@@ -2934,7 +2970,7 @@ component LayoutPage inherits Page {
                                 PaletteItem {
                                     k: "voice";
                                     title: "语音输入框";
-                                    note: "用手机输入法说，能先看再发";
+                                    note: "先看再发";
                                     clicked => {
                                         root.add-module(2);
                                     }
@@ -3314,6 +3350,86 @@ component DialogCard inherits Rectangle {
             // 点在卡片空白处不算点遮罩
             TouchArea { }
             @children
+        }
+    }
+}
+
+// 扫码绑定手机：二维码（一次性配对码，10 分钟有效）、这台电脑的地址、怎么扫
+component LanDialog inherits DialogCard {
+    in property <image> qr;
+    in property <bool> ready;
+    in property <string> addr-text;
+    in property <string> note;
+    callback close();
+    card-width: 460px;
+    card-height: 520px;
+    dismiss => {
+        root.close();
+    }
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        Text {
+            text: "扫码绑定手机";
+            color: Theme.fg;
+            font-size: 16px;
+            font-weight: 700;
+        }
+        WrapText {
+            text: "在手机上打开蒜鸟，点右上角的三个点，选「扫码连接电脑」，对准下面的二维码。";
+            color: Theme.fg2;
+            font-size: 13px;
+        }
+        HorizontalLayout {
+            alignment: center;
+            // 二维码一直是白底黑块（深色模式也是），手机才扫得出来
+            Rectangle {
+                width: 268px;
+                height: 268px;
+                border-radius: 12px;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: Theme.line2;
+                if root.ready: Image {
+                    x: 14px;
+                    y: 14px;
+                    width: 240px;
+                    height: 240px;
+                    source: root.qr;
+                    image-rendering: pixelated;
+                }
+                if !root.ready: Text {
+                    text: "正在准备二维码…";
+                    color: #888888;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Text {
+            text: root.addr-text;
+            color: Theme.fg;
+            font-size: 12.5px;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        WrapText {
+            text: root.note;
+            color: Theme.mut;
+            font-size: 11.5px;
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            GhostButton {
+                text: "关闭";
+                clicked => {
+                    root.close();
+                }
+            }
         }
     }
 }
@@ -3751,7 +3867,7 @@ component SequencesDialog inherits DialogCard {
             padding-bottom: 12px;
             spacing: 10px;
             Muted {
-                text: "当前：" + root.target + "（" + root.current-count + " 步）。存起来以后可以插入或替换到别的按法，插入是加在最后。都可以撤销。";
+                text: "当前：" + root.target + "（" + root.current-count + " 步）。存起来后可以插入或替换到别的按法。";
                 horizontal-stretch: 1;
                 vertical-alignment: center;
             }
@@ -4338,7 +4454,7 @@ component ActionRow inherits Rectangle {
         if root.item.kind < 0: HorizontalLayout {
             padding-left: 32px;
             Muted {
-                text: "蒜鸟不认识这一步（更新的版本加的，或者从别的软件导入的）。保存时照原样留着，执行时跳过；不要了可以删掉。";
+                text: "蒜鸟不认识这一步：保存时原样留着，执行时跳过。";
             }
         }
     }
@@ -4353,7 +4469,7 @@ component ActionRow inherits Rectangle {
         hint-text := Text {
             x: 10px;
             height: parent.height;
-            text: root.item.enabled ? "这一步启用中，关掉就跳过（不用删）" : "这一步停用了，执行时跳过";
+            text: root.item.enabled ? "关掉就跳过这一步" : "已停用，执行时跳过";
             color: Theme.ink-fg;
             font-size: 12px;
             vertical-alignment: center;
@@ -4424,7 +4540,7 @@ component MappingPage inherits Page {
         spacing: 16px;
         PageHead {
             title: "映射";
-            note: "每个按键单击、双击、长按各做什么，按住时怎么办";
+            note: "每个键单击、双击、长按各做什么";
         }
         // 方案：布局共用，切方案只换每个按键的动作和按住时
         Card {
@@ -4503,7 +4619,7 @@ component MappingPage inherits Page {
                     }
                 }
                 Text {
-                    text: "布局共用，切方案只换按键的动作和按住时";
+                    text: "布局各方案共用";
                     color: Theme.mut;
                     font-size: 12.5px;
                     overflow: elide;
@@ -4788,7 +4904,7 @@ component MappingPage inherits Page {
                                     }
                                 }
                                 Muted {
-                                    text: "双击、长按配了动作，但按住时是「" + root.current.hold-name + "」，它们不会生效。要用的话把按住时改成「长按一次」或「重复长按」。";
+                                    text: "按住时是「" + root.current.hold-name + "」，双击、长按不会生效；改成「长按一次」或「重复长按」才行。";
                                     color: Theme.warn-fg;
                                     horizontal-stretch: 1;
                                 }
@@ -4800,7 +4916,7 @@ component MappingPage inherits Page {
                         padding-right: 16px;
                         padding-top: 6px;
                         Muted {
-                            text: root.hold == 2 ? "按顺序执行下面的动作：按下就执行，按住一直重复。" : root.hold == 3 ? "按下时按住下面这个键（或组合键），松手抬起。" : "按顺序执行下面的动作，停用的步骤跳过；「等待」只推迟后面的步骤。配了双击的按键，单击要等双击间隔过了才执行。";
+                            text: root.hold == 2 ? "按下就执行，按住一直重复。" : root.hold == 3 ? "按下时按住这个键，松手抬起。" : "按顺序执行，停用的步骤跳过。配了双击时，单击要等一下才执行。";
                         }
                     }
                     VerticalLayout {
@@ -4959,7 +5075,7 @@ component OverviewPage inherits Page {
         spacing: 16px;
         PageHead {
             title: "总览";
-            note: "方案「" + root.profile-name + "」里所有按键单击、双击、长按各做什么，点一行去改";
+            note: "方案「" + root.profile-name + "」的全部按键，点一行去改";
             GhostButton {
                 text: "去映射里改";
                 has-icon: true;
@@ -5092,12 +5208,17 @@ component SettingsPage inherits Page {
     // 导入遥控器映射：0 从本机读取 1 选择文件
     callback import-remote(int);
     callback open-logs();
+    // 局域网连接：扫码绑定过的手机、开不起来的原因；显示二维码、解除绑定
+    in property <[LanPhoneRow]> lan-phones;
+    in property <string> lan-error;
+    callback lan-pair();
+    callback lan-remove(string);
     VerticalLayout {
         alignment: start;
         spacing: 16px;
         PageHead {
             title: "设置";
-            note: "改完马上生效，手机连着时马上同步过去；改错了可以撤销";
+            note: "改完立即生效，可以撤销";
         }
         HorizontalLayout {
             spacing: 16px;
@@ -5171,7 +5292,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "指针平滑";
-                            note: "走得更连贯，约多 10 毫秒延迟";
+                            note: "更连贯，多约 10 毫秒延迟";
                             VerticalLayout {
                                 alignment: center;
                                 Toggle {
@@ -5207,7 +5328,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "文字上屏方式";
-                            note: "剪贴板在终端里更稳；边说边打字时固定逐字。「输入文本」选「跟随设置」的也按这个";
+                            note: "终端里用剪贴板更稳";
                             VerticalLayout {
                                 alignment: center;
                                 Segmented {
@@ -5239,7 +5360,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "说完自动发送";
-                            note: "文字停了一会儿就发到电脑";
+                            note: "停顿一下就自动发出";
                             dim: !root.has-voice-box;
                             VerticalLayout {
                                 alignment: center;
@@ -5280,7 +5401,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "和手机同步剪贴板";
-                            note: "电脑上复制的文字和图片，手机上能直接粘贴；手机上复制的文字，回到蒜鸟后电脑上就能粘贴（图片只从电脑到手机）。密码管理器复制的密码不同步";
+                            note: "一边复制，另一边就能粘贴";
                             VerticalLayout {
                                 alignment: center;
                                 Toggle {
@@ -5289,6 +5410,52 @@ component SettingsPage inherits Page {
                                         root.changed();
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        alignment: start;
+                        CardHead {
+                            title: "局域网连接";
+                            icon: @image-url("../icons/globe.svg");
+                        }
+                        SettingRow {
+                            label: "扫码绑定手机";
+                            note: "同一网络下不用蓝牙，延迟更低";
+                            VerticalLayout {
+                                alignment: center;
+                                PrimaryButton {
+                                    text: "显示二维码";
+                                    clicked => {
+                                        root.lan-pair();
+                                    }
+                                }
+                            }
+                        }
+                        for phone in root.lan-phones: SettingRow {
+                            label: phone.name;
+                            note: phone.detail;
+                            VerticalLayout {
+                                alignment: center;
+                                GhostButton {
+                                    small: true;
+                                    text: "解除绑定";
+                                    clicked => {
+                                        root.lan-remove(phone.id);
+                                    }
+                                }
+                            }
+                        }
+                        if root.lan-error != "": HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            padding-bottom: 12px;
+                            WrapText {
+                                text: root.lan-error;
+                                color: Theme.red;
+                                font-size: 11.5px;
                             }
                         }
                     }
@@ -5320,7 +5487,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "双击间隔";
-                            note: "两下之间不超过这么久算双击";
+                            note: "两下间隔在这以内算双击";
                             VerticalLayout {
                                 alignment: center;
                                 Stepper {
@@ -5356,7 +5523,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "连发延迟";
-                            note: "「连发」的按键按住这么久开始重复";
+                            note: "按住多久开始连发";
                             VerticalLayout {
                                 alignment: center;
                                 Stepper {
@@ -5374,7 +5541,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "连发间隔";
-                            note: "现在每秒约 " + Math.round(1000 / Math.max(1, root.repeat-interval-ms)) + " 次";
+                            note: "每秒约 " + Math.round(1000 / Math.max(1, root.repeat-interval-ms)) + " 次";
                             VerticalLayout {
                                 alignment: center;
                                 Stepper {
@@ -5392,7 +5559,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "重复长按：第二次";
-                            note: "第一次长按之后隔多久再来";
+                            note: "离第一次多久";
                             VerticalLayout {
                                 alignment: center;
                                 Stepper {
@@ -5410,7 +5577,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "重复长按：之后";
-                            note: "之后每两次之间隔多久";
+                            note: "之后每次的间隔";
                             VerticalLayout {
                                 alignment: center;
                                 Stepper {
@@ -5428,7 +5595,7 @@ component SettingsPage inherits Page {
                         }
                         SliderRow {
                             label: "光标加速度";
-                            note: "连发「光标移动」时越按越快，0 不加速";
+                            note: "光标连发时越按越快";
                             minimum: 0;
                             maximum: 100;
                             unit: "%";
@@ -5460,7 +5627,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "开机自动启动后台";
-                            note: "开了以后不打开这个窗口，手机也能直接连";
+                            note: "不开这个窗口，手机也能连";
                             VerticalLayout {
                                 alignment: center;
                                 Toggle {
@@ -5489,7 +5656,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "日志";
-                            note: "后台的运行记录，出问题时可以看看";
+                            note: "出问题时看这里";
                             VerticalLayout {
                                 alignment: center;
                                 GhostButton {
@@ -5514,7 +5681,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "导出备份";
-                            note: "布局、所有方案、设置和保存的序列，存成一个文件";
+                            note: "布局、方案、设置存成一个文件";
                             VerticalLayout {
                                 alignment: center;
                                 GhostButton {
@@ -5528,7 +5695,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "导入备份";
-                            note: "先检查、给你看摘要；导入前自动备份现在的";
+                            note: "导入前会先备份现在的";
                             VerticalLayout {
                                 alignment: center;
                                 GhostButton {
@@ -5542,7 +5709,7 @@ component SettingsPage inherits Page {
                         }
                         SettingRow {
                             label: "遥控器映射";
-                            note: "把遥控器映射软件里的按键导成新的一页";
+                            note: "导入成新的一页";
                             VerticalLayout {
                                 alignment: center;
                                 MenuButton {
@@ -5626,7 +5793,7 @@ component AboutPage inherits Page {
                         }
                     }
                     WrapText {
-                        text: "把手机变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接，电脑端不需要驱动。";
+                        text: "把手机变成电脑的触控板、快捷键和语音输入。";
                         font-size: 13.5px;
                     }
                     HorizontalLayout {
@@ -5643,7 +5810,7 @@ component AboutPage inherits Page {
                         }
                     }
                     Muted {
-                        text: "关掉这个窗口不影响使用：后台在任务栏右下角的托盘里继续工作，手机照常连接。";
+                        text: "关掉窗口不影响使用，后台在托盘里继续工作。";
                         color: Theme.fg2;
                     }
                     HorizontalLayout {
@@ -5719,7 +5886,7 @@ component AboutPage inherits Page {
                     }
                     SettingRow {
                         label: "自动检查更新";
-                        note: "蒜鸟开着时每隔几个小时看一下 GitHub 上有没有发布新版本，有就提示你。下载、安装都要你点了才做。";
+                        note: "有新版本时提醒你，不会自动安装";
                         VerticalLayout {
                             alignment: center;
                             Toggle {
@@ -5849,7 +6016,7 @@ component GridDialog inherits DialogCard {
             font-weight: 700;
         }
         Muted {
-            text: "网格所有页面共用。格子变多，所有页面的模块都会跟着变小；格子变少就变大。";
+            text: "所有页面共用网格，格子越多，模块越小。";
             font-size: 12.5px;
         }
         HorizontalLayout {
@@ -5909,7 +6076,7 @@ component GridDialog inherits DialogCard {
                     }
                 }
                 Muted {
-                    text: root.issue != "" ? root.issue : root.c == root.columns && root.r == root.rows ? "现在是 " + root.columns + " 列 × " + root.rows + " 行。可以选 2～8 列、3～16 行。" : "从 " + root.columns + " 列 × " + root.rows + " 行改成 " + root.c + " 列 × " + root.r + " 行。改完可以撤销。";
+                    text: root.issue != "" ? root.issue : root.c == root.columns && root.r == root.rows ? "现在是 " + root.columns + " 列 × " + root.rows + " 行，可选 2～8 列、3～16 行。" : "从 " + root.columns + " 列 × " + root.rows + " 行改成 " + root.c + " 列 × " + root.r + " 行。改完可以撤销。";
                     color: root.issue != "" ? Theme.red : Theme.mut;
                 }
             }
@@ -5976,7 +6143,7 @@ component ImportDialog inherits DialogCard {
             padding-right: 16px;
             padding-bottom: 10px;
             Muted {
-                text: "勾选要导入的键，确认后新建一页「" + root.page + "」，键排成遥控器的样子。只读取，不会改遥控器映射软件的数据。单击空着但配了双击或长按的键，单击补成遥控器原来的键（电源键除外）；三种按法都没配的键默认不勾。";
+                text: "勾选要导入的键，确认后新建一页「" + root.page + "」。只读取，不改遥控器软件的数据。";
                 font-size: 12.5px;
                 horizontal-stretch: 1;
             }
@@ -9277,6 +9444,18 @@ export component AppWindow inherits Window {
     in property <string> update-note;
     in property <bool> update-checking;
     in-out property <bool> update-auto: true;
+    // 局域网连接：二维码弹窗、设置页里绑定过的手机；link-kind 是现在走的连接（局域网 / 蓝牙 / 局域网 + 蓝牙）
+    in property <bool> lan-open;
+    in property <image> lan-qr;
+    in property <bool> lan-qr-ready;
+    in property <string> lan-addr-text;
+    in property <string> lan-qr-note;
+    in property <[LanPhoneRow]> lan-phones;
+    in property <string> lan-error;
+    in property <string> link-kind;
+    callback lan-pair();
+    callback lan-close();
+    callback lan-remove(string);
     in property <bool> update-open;
     changed update-open => {
         if (!self.update-open) {
@@ -9402,15 +9581,10 @@ export component AppWindow inherits Window {
                             width: 28px;
                             height: 28px;
                         }
-                        Text {
-                            text: "蒜鸟";
-                            font-size: 21px;
-                            font-weight: 900;
-                            color: Theme.fg;
-                        }
+                        Wordmark { }
                         VerticalLayout {
                             alignment: end;
-                            padding-bottom: 7px;
+                            padding-bottom: 1px;
                             Rectangle {
                                 width: 6px;
                                 height: 6px;
@@ -9582,7 +9756,7 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                     Text {
-                                        text: root.connected ? "已连接 · " + root.device : root.core-running ? "未连接" : "后台未运行";
+                                        text: root.connected ? "已连接 · " + root.device + (root.link-kind != "" ? " · " + root.link-kind : "") : root.core-running ? "未连接" : "后台未运行";
                                         color: Theme.fg2;
                                         font-size: 12.5px;
                                         vertical-alignment: center;
@@ -10107,6 +10281,14 @@ export component AppWindow inherits Window {
                                 import-config => {
                                     root.import-config();
                                 }
+                                lan-phones: root.lan-phones;
+                                lan-error: root.lan-error;
+                                lan-pair => {
+                                    root.lan-pair();
+                                }
+                                lan-remove(id) => {
+                                    root.lan-remove(id);
+                                }
                                 import-remote(k) => {
                                     root.import-remote(k);
                                 }
@@ -10447,6 +10629,15 @@ export component AppWindow inherits Window {
             root.update-page();
         }
     }
+    if root.lan-open: LanDialog {
+        qr: root.lan-qr;
+        ready: root.lan-qr-ready;
+        addr-text: root.lan-addr-text;
+        note: root.lan-qr-note;
+        close => {
+            root.lan-close();
+        }
+    }
     if root.name-open: NameDialog {
         title: root.name-title;
         note: root.name-note;
@@ -10688,15 +10879,10 @@ export component SetupWindow inherits Window {
                             width: 28px;
                             height: 28px;
                         }
-                        Text {
-                            text: "蒜鸟";
-                            font-size: 21px;
-                            font-weight: 900;
-                            color: Theme.fg;
-                        }
+                        Wordmark { }
                         VerticalLayout {
                             alignment: end;
-                            padding-bottom: 7px;
+                            padding-bottom: 1px;
                             Rectangle {
                                 width: 6px;
                                 height: 6px;

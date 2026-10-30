@@ -135,7 +135,7 @@ impl Updater {
             None => ("已经是最新版".to_string(), 4),
         };
         let note = if state.checked == 0 {
-            "点右边的按钮，看看 GitHub 上有没有发布新版本。".to_string()
+            "去 GitHub 看看有没有新版本".to_string()
         } else if !state.error.is_empty() && available.is_none() {
             format!("上次检查（{}）没查成：{}", win::local_time_text(state.checked), state.error)
         } else {

@@ -1,5 +1,6 @@
 package dev.suanniao
 
+import android.animation.LayoutTransition
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
@@ -7,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -41,6 +43,11 @@ class Overlays(private val host: FrameLayout) {
     /** 提示卡片离屏幕顶的距离（顶栏下面） */
     var noticeTop = 0
 
+    private companion object {
+        /** 「›」箭头的标记：刷新时两边都是箭头就不用换 */
+        const val CHEVRON = "chevron"
+    }
+
     private val modals = ArrayList<Modal>()
     val isOpen get() = modals.isNotEmpty()
     fun top(): Modal? = modals.lastOrNull()
@@ -69,6 +76,16 @@ class Overlays(private val host: FrameLayout) {
         var closed = false
             private set
 
+        /** 进场动画还在走：这时不原地重建内容（重建一次要排版、绘制几十毫秒，动画会顿一下），等走完再建 */
+        protected var entering = false
+            private set
+        private var refreshAfterEnter = false
+
+        /**
+         * 进场分两步，保证动画从第一帧起就是完整、均匀的：
+         * 第一帧把面板放在起点（屏幕外、透明），搭建、排版、绘制这些重活在这一帧里做完，用户看不到；
+         * 下一帧才开始动画。以前是加进来就开始计时，重活占掉的那几十毫秒里动画已经「走」了一截，一出来就跳一下。
+         */
         protected fun attach(params: FrameLayout.LayoutParams, withScrim: Boolean = true) {
             if (withScrim) {
                 scrim.setBackgroundColor(palette.scrim)
@@ -76,16 +93,38 @@ class Overlays(private val host: FrameLayout) {
                 scrim.isClickable = true
                 scrim.setOnClickListener { if (cancellable) dismiss() }
                 host.addView(scrim, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-                scrim.animate().alpha(1f).setDuration(200).setInterpolator(Ui.EASE).start()
             }
             host.addView(panel, params)
             modals += this
             spot?.bringToFront() // 方案大字、提示卡片总在最上面
             noticeView?.bringToFront()
-            beforeFirstDraw(panel) { animateIn() }
+            entering = true
+            beforeFirstDraw(panel) {
+                prepareIn()
+                Choreographer.getInstance().postFrameCallback {
+                    if (closed) return@postFrameCallback
+                    if (withScrim) scrim.animate().alpha(1f).setDuration(220).setInterpolator(Ui.EASE).start()
+                    animateIn {
+                        entering = false
+                        if (refreshAfterEnter) {
+                            refreshAfterEnter = false
+                            rebuild()
+                        }
+                    }
+                }
+            }
         }
 
-        protected abstract fun animateIn()
+        /** 内容变了要重建：进场动画还在走就等它走完 */
+        protected fun requestRebuild() {
+            if (entering) refreshAfterEnter = true else rebuild()
+        }
+
+        protected open fun rebuild() {}
+
+        /** 摆到进场动画的起点（这时已经量好大小） */
+        protected abstract fun prepareIn()
+        protected abstract fun animateIn(end: () -> Unit)
         protected abstract fun animateOut(end: () -> Unit)
 
         fun dismiss(animate: Boolean = true) {
@@ -93,7 +132,8 @@ class Overlays(private val host: FrameLayout) {
             closed = true
             modals.remove(this)
             if (animate) {
-                scrim.animate().alpha(0f).setDuration(180).setInterpolator(Ui.EASE).withEndAction { host.removeView(scrim) }.start()
+                scrim.animate().cancel()
+                scrim.animate().alpha(0f).setDuration(200).setInterpolator(Ui.EASE).withEndAction { host.removeView(scrim) }.start()
                 animateOut { host.removeView(panel) }
             } else {
                 host.removeView(scrim)
@@ -117,10 +157,22 @@ class Overlays(private val host: FrameLayout) {
     // ───────── 底部面板 ─────────
 
     /** 底部面板。build 里用 header / row / toggle / radio 等往里加东西；内容变了调 refresh() 原地重建 */
-    fun sheet(build: Sheet.() -> Unit): Sheet = Sheet(build)
+    /**
+     * reuse：上次同一个面板的 body。拿来接着用，只改变了的行（打开菜单不用再新建几十行）。
+     * 上一个面板还在滑出去（还挂在屏幕上）就不拿，不然它会一下子变空
+     */
+    fun sheet(reuse: LinearLayout? = null, build: Sheet.() -> Unit): Sheet =
+        Sheet(reuse?.takeIf { !it.isAttachedToWindow }, build)
 
-    inner class Sheet(private val build: Sheet.() -> Unit) : Modal() {
-        val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    inner class Sheet(reuse: LinearLayout?, private val build: Sheet.() -> Unit) : Modal() {
+        val body = (reuse?.also { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+            ?: LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }).apply { layoutTransition = null }
+        /** 这次 build 走到第几个子视图了 */
+        private var cursor = 0
+        /** 同一个 key 这次出现了几回（两条分隔线、同名的行） */
+        private val seen = HashMap<String, Int>()
+        private val wrap = { LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }
+        private val rowParams = { LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { setMargins(dp(10f), 0, dp(10f), 0) } }
 
         init {
             val scroll = object : ScrollView(context) {
@@ -150,83 +202,176 @@ class Overlays(private val host: FrameLayout) {
                 })
                 addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             }
-            build()
+            rebuild()
             attach(FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
         }
 
         fun refresh() {
             if (closed) return
-            body.removeAllViews()
-            build()
+            requestRebuild()
         }
 
-        override fun animateIn() {
+        /**
+         * 内容变了：重新跑一遍 build，但不拆掉重搭。一行一行对过去，同一行（种类 + 标题一样）就地改小字、开关、
+         * 点了做什么；只有多出来、少了的行才新建、删掉。整个重搭要建几十个 TextView 再排版，一次几十毫秒，
+         * 点个开关菜单就顿一下，刚走了一半的开关动画也会被新开关顶掉。
+         */
+        override fun rebuild() {
+            if (closed) return
+            cursor = 0
+            seen.clear()
+            build()
+            if (cursor < body.childCount) body.removeViews(cursor, body.childCount - cursor)
+        }
+
+        /**
+         * 放一项：从当前位置往后找同一个 key 的旧视图，找到了就把中间多余的删掉、调 update 就地改
+         * （update 返回 false 表示改不了，换个新的）；找不到就新建插进来。
+         */
+        private fun place(kind: String, title: String, params: () -> LinearLayout.LayoutParams, make: () -> View, update: (View) -> Boolean): View {
+            val base = "$kind:$title"
+            val n = seen.getOrDefault(base, 0)
+            seen[base] = n + 1
+            val key = "$base#$n"
+            for (j in cursor until body.childCount) {
+                val old = body.getChildAt(j)
+                if (old.getTag(R.id.sheet_key) != key) continue
+                if (j > cursor) body.removeViews(cursor, j - cursor)
+                if (update(old)) {
+                    cursor++
+                    return old
+                }
+                body.removeViewAt(cursor)
+                break
+            }
+            val v = make()
+            v.setTag(R.id.sheet_key, key)
+            body.addView(v, cursor++, params())
+            return v
+        }
+
+        // 滑动时整块面板画成一张图层再移动，每帧只挪图层，不重画里面几十行字。
+        // 图层在看不见的准备帧里就画好：放到动画开始那一帧再画，要十几毫秒，开头会掉帧
+        override fun prepareIn() {
             panel.translationY = panel.height.toFloat()
-            panel.animate().translationY(0f).setDuration(300).setInterpolator(Ui.EASE).start()
+            panel.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+
+        override fun animateIn(end: () -> Unit) {
+            panel.animate().translationY(0f).setDuration(320).setInterpolator(Ui.EASE).withEndAction {
+                panel.setLayerType(View.LAYER_TYPE_NONE, null)
+                body.layoutTransition = rowsTransition()
+                end()
+            }.start()
+        }
+
+        /**
+         * 进场以后行多了、少了（展开「关于」、出现一条提示）：新行淡入、下面的行滑过去，不是一下子跳。
+         * 只挪已经排好的行，不重新排版；进场时不开，免得和滑上来的动画搅在一起
+         */
+        private fun rowsTransition() = LayoutTransition().apply {
+            setDuration(220)
+            listOf(LayoutTransition.APPEARING, LayoutTransition.DISAPPEARING, LayoutTransition.CHANGE_APPEARING, LayoutTransition.CHANGE_DISAPPEARING).forEach { setInterpolator(it, Ui.EASE) }
+            setDuration(LayoutTransition.DISAPPEARING, 140)
+            setStartDelay(LayoutTransition.APPEARING, 80)
+            setStartDelay(LayoutTransition.CHANGE_APPEARING, 0)
+            setStartDelay(LayoutTransition.CHANGE_DISAPPEARING, 0)
+            setStagger(LayoutTransition.CHANGE_APPEARING, 0)
+            setStagger(LayoutTransition.CHANGE_DISAPPEARING, 0)
         }
 
         override fun animateOut(end: () -> Unit) {
-            panel.animate().translationY(panel.height.toFloat()).setDuration(220).setInterpolator(Ui.EASE).withEndAction(end).start()
+            panel.animate().cancel()
+            panel.animate().translationY(panel.height.toFloat()).setDuration(240).setInterpolator(Ui.EASE_IN_OUT).withLayer().withEndAction(end).start()
         }
 
         fun header(title: String, subtitle: String? = null) {
-            body.addView(LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(24f), dp(6f), dp(24f), dp(10f))
-                addView(text(title, 19f, 900, palette.fg))
-                subtitle?.let { addView(text(it, 13f, 650, palette.sub).apply { setPadding(0, dp(4f), 0, 0) }) }
-            })
+            place("h", title, wrap, make = {
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(24f), dp(6f), dp(24f), dp(10f))
+                    addView(text(title, 19f, 900, palette.fg))
+                    subtitle?.let { addView(text(it, 13f, 650, palette.sub).apply { setPadding(0, dp(4f), 0, 0) }) }
+                }
+            }) { old ->
+                val sub = (old as LinearLayout).getChildAt(1) as? TextView
+                if ((sub == null) != (subtitle == null)) return@place false
+                if (sub != null) setIfChanged(sub, subtitle)
+                true
+            }
         }
 
         fun section(title: String) {
-            body.addView(text(title, 12.5f, 850, palette.sub).apply { setPadding(dp(24f), dp(14f), dp(24f), dp(4f)) })
+            place("s", title, wrap, make = {
+                text(title, 12.5f, 850, palette.sub).apply { setPadding(dp(24f), dp(14f), dp(24f), dp(4f)) }
+            }) { true }
         }
 
         fun divider() {
-            body.addView(View(context).apply { setBackgroundColor(palette.line) },
-                LinearLayout.LayoutParams(MATCH_PARENT, Ui.hairline(context).toInt()).apply {
-                    setMargins(dp(24f), dp(6f), dp(24f), dp(6f))
-                })
+            place("d", "", {
+                LinearLayout.LayoutParams(MATCH_PARENT, Ui.hairline(context).toInt()).apply { setMargins(dp(24f), dp(6f), dp(24f), dp(6f)) }
+            }, make = { View(context).apply { setBackgroundColor(palette.line) } }) { true }
         }
 
         /** 普通的一行：点了做 onClick；trailing 是右边的东西（默认一个「›」，null 就不画） */
         fun row(title: String, subtitle: String? = null, enabled: Boolean = true, trailing: View? = chevron(), onClick: (() -> Unit)?): View =
-            addRow(rowView(title, subtitle, enabled, leading = null, trailing = trailing, onClick = onClick))
+            place("r", title, rowParams, make = { rowView(title, subtitle, enabled, leading = null, trailing = trailing, onClick = onClick) }) { old ->
+                val parts = old.tag as RowParts
+                val same = (parts.trailing == null && trailing == null) ||
+                    (parts.trailing?.getTag(R.id.sheet_key) == CHEVRON && trailing?.getTag(R.id.sheet_key) == CHEVRON)
+                if (!same) return@place false // 右边换成了别的东西（一般是一段字）：整行换新的
+                updateRow(old, title, subtitle, enabled, onClick)
+                true
+            }
 
-        /** 带开关的一行：点整行就切换 */
+        /** 带开关的一行：点整行就切换。刷新时还是原来那个开关，状态变了就动画过去 */
         fun toggle(title: String, subtitle: String?, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit): Ui.Toggle {
-            val t = Ui.Toggle(context, palette).apply { set(checked, animate = false) }
-            addRow(rowView(title, subtitle, enabled, leading = null, trailing = t) {
+            lateinit var t: Ui.Toggle
+            val click = {
                 val now = !t.checked
                 t.set(now, animate = true)
                 Ui.buzz(t, Ui.Buzz.TAP)
                 onChange(now)
-            })
+            }
+            place("t", title, rowParams, make = {
+                t = Ui.Toggle(context, palette).apply { set(checked, animate = false) }
+                rowView(title, subtitle, enabled, leading = null, trailing = t, onClick = click)
+            }) { old ->
+                t = (old.tag as RowParts).trailing as Ui.Toggle
+                if (t.checked != checked) t.set(checked, animate = true)
+                updateRow(old, title, subtitle, enabled, click)
+                true
+            }
             return t
         }
 
         /** 单选的一行：左边一个圆点 */
         fun radio(title: String, subtitle: String?, checked: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
-            val r = Ui.Radio(context, palette).apply { this.checked = checked }
-            addRow(rowView(title, subtitle, enabled, leading = r, trailing = null) {
+            lateinit var r: Ui.Radio
+            val click = {
                 if (!r.checked) Ui.buzz(r, Ui.Buzz.TAP)
                 onClick()
-            })
+            }
+            place("o", title, rowParams, make = {
+                r = Ui.Radio(context, palette).apply { this.checked = checked }
+                rowView(title, subtitle, enabled, leading = r, trailing = null, onClick = click)
+            }) { old ->
+                r = (old.tag as RowParts).leading as Ui.Radio
+                if (r.checked != checked) r.checked = checked
+                updateRow(old, title, subtitle, enabled, click)
+                true
+            }
         }
 
+        /** 调用方自己做的视图：每次都是新的，直接放进去（旧的那个在后面对行时删掉） */
         fun view(v: View, params: LinearLayout.LayoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) {
-            body.addView(v, params)
+            body.addView(v, cursor++, params)
         }
 
         fun buttons(vararg list: Btn) {
-            body.addView(buttonRow(list.toList()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+            view(buttonRow(list.toList()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
                 setMargins(dp(20f), dp(14f), dp(20f), dp(4f))
             })
-        }
-
-        private fun addRow(v: View): View {
-            body.addView(v, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { setMargins(dp(10f), 0, dp(10f), 0) })
-            return v
         }
     }
 
@@ -258,15 +403,23 @@ class Overlays(private val host: FrameLayout) {
             attach(FrameLayout.LayoutParams(width, WRAP_CONTENT, Gravity.CENTER))
         }
 
-        override fun animateIn() {
+        override fun prepareIn() {
             panel.alpha = 0f
             panel.scaleX = 0.94f
             panel.scaleY = 0.94f
-            panel.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200).setInterpolator(Ui.EASE).start()
+            panel.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+
+        override fun animateIn(end: () -> Unit) {
+            panel.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(240).setInterpolator(Ui.EASE).withEndAction {
+                panel.setLayerType(View.LAYER_TYPE_NONE, null)
+                end()
+            }.start()
         }
 
         override fun animateOut(end: () -> Unit) {
-            panel.animate().alpha(0f).scaleX(0.96f).scaleY(0.96f).setDuration(150).setInterpolator(Ui.EASE).withEndAction(end).start()
+            panel.animate().cancel()
+            panel.animate().alpha(0f).scaleX(0.96f).scaleY(0.96f).setDuration(170).setInterpolator(Ui.EASE).withLayer().withEndAction(end).start()
         }
     }
 
@@ -282,13 +435,21 @@ class Overlays(private val host: FrameLayout) {
             attach(FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT), withScrim = false)
         }
 
-        override fun animateIn() {
+        override fun prepareIn() {
             panel.alpha = 0f
-            panel.animate().alpha(1f).setDuration(260).setInterpolator(Ui.EASE).withLayer().start()
+            panel.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+
+        override fun animateIn(end: () -> Unit) {
+            panel.animate().alpha(1f).setDuration(260).setInterpolator(Ui.EASE).withEndAction {
+                panel.setLayerType(View.LAYER_TYPE_NONE, null)
+                end()
+            }.start()
         }
 
         // 关的时候微微放大着淡出，像是「走进」了主界面
         override fun animateOut(end: () -> Unit) {
+            panel.animate().cancel()
             panel.animate().alpha(0f).scaleX(1.04f).scaleY(1.04f).setDuration(280).setInterpolator(Ui.EASE)
                 .withLayer().withEndAction(end).start()
         }
@@ -396,6 +557,13 @@ class Overlays(private val host: FrameLayout) {
         includeFontPadding = false
     }
 
+    /** 一行里刷新时要改的东西（挂在行的 tag 上） */
+    class RowParts(val texts: LinearLayout, val leading: View?, val trailing: View?) {
+        var enabled = true
+        var onClick: (() -> Unit)? = null
+        val live get() = enabled && onClick != null
+    }
+
     /** 一行：左边可选的圆点（单选），中间标题和小字，右边可选的东西（开关、箭头） */
     @SuppressLint("ClickableViewAccessibility")
     fun rowView(title: String, subtitle: String?, enabled: Boolean, leading: View?, trailing: View?, onClick: (() -> Unit)?): View {
@@ -410,24 +578,53 @@ class Overlays(private val host: FrameLayout) {
         val texts = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             addView(text(title, 15.5f, 750, palette.fg))
-            subtitle?.let { addView(text(it, 12.5f, 650, palette.sub).apply { setPadding(0, dp(3f), 0, 0); setLineSpacing(dpf(1.5f), 1f) }) }
+            subtitle?.let { addView(subText(it)) }
         }
         row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         trailing?.let { row.addView(it, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(12f) }) }
         row.contentDescription = listOfNotNull(title, subtitle).joinToString("，")
-        if (enabled && onClick != null) {
-            val bg = Ui.round(0, dpf(16f))
-            row.background = bg
-            row.setOnTouchListener { _, e ->
-                when (e.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> bg.setColor(palette.bg)
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> row.postDelayed({ bg.setColor(0) }, 110)
-                }
-                false
-            }
-            row.setOnClickListener { onClick() }
+        val parts = RowParts(texts, leading, trailing).also {
+            it.enabled = enabled
+            it.onClick = onClick
         }
+        row.tag = parts
+        val bg = Ui.round(0, dpf(16f))
+        row.background = bg
+        row.setOnTouchListener { _, e ->
+            if (parts.live) when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> bg.setColor(palette.bg)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> row.postDelayed({ bg.setColor(0) }, 110)
+            }
+            false
+        }
+        row.setOnClickListener { if (parts.live) parts.onClick?.invoke() }
+        row.isClickable = parts.live
         return row
+    }
+
+    private fun subText(s: String) = text(s, 12.5f, 650, palette.sub).apply { setPadding(0, dp(3f), 0, 0); setLineSpacing(dpf(1.5f), 1f) }
+
+    /** 就地改一行：小字、能不能点（淡入淡出）、点了做什么 */
+    fun updateRow(row: View, title: String, subtitle: String?, enabled: Boolean, onClick: (() -> Unit)?) {
+        val parts = row.tag as RowParts
+        val sub = parts.texts.getChildAt(1) as? TextView
+        when {
+            subtitle == null -> if (sub != null) parts.texts.removeView(sub)
+            sub == null -> parts.texts.addView(subText(subtitle))
+            else -> setIfChanged(sub, subtitle)
+        }
+        if (parts.enabled != enabled) {
+            parts.enabled = enabled
+            row.animate().alpha(if (enabled) 1f else 0.42f).setDuration(160).setInterpolator(Ui.EASE).start()
+        }
+        parts.onClick = onClick
+        row.isClickable = parts.live
+        row.contentDescription = listOfNotNull(title, subtitle).joinToString("，")
+    }
+
+    /** 字一样就不 setText：setText 哪怕字没变也会让整列重新排版 */
+    fun setIfChanged(v: TextView, s: CharSequence?) {
+        if (v.text.toString() != s?.toString()) v.text = s
     }
 
     fun buttonRow(buttons: List<Btn>): LinearLayout = LinearLayout(context).apply {
@@ -463,6 +660,8 @@ class Overlays(private val host: FrameLayout) {
 
     /** 行尾的「›」 */
     fun chevron(): View = object : View(context) {
+        init { setTag(R.id.sheet_key, CHEVRON) }
+
         private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = dpf(1.8f)
