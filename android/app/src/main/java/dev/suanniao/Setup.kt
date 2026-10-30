@@ -26,6 +26,9 @@ import dev.suanniao.Overlays.Style
  */
 class Setup(private val host: Host, private val overlays: Overlays) {
 
+    /** 扫电脑上的二维码要做什么：只蓝牙配对、只局域网绑定、能做的都做 */
+    enum class ScanFor { ANY, BT, LAN }
+
     /** MainActivity 提供的能力 */
     interface Host {
         val context: Context
@@ -36,8 +39,18 @@ class Setup(private val host: Host, private val overlays: Overlays) {
         fun savedName(): String?
         fun chooseComputer(address: String, name: String)
         fun finishOnboarding()
-        /** 扫电脑上的二维码，用局域网连（不用蓝牙） */
-        fun scanComputer() {}
+        /** 扫电脑上的二维码：蓝牙配对、局域网绑定（forWhat 只做其中一种；ANY 能做的都做） */
+        fun scanComputer(forWhat: ScanFor = ScanFor.ANY) {}
+        /** 扫码绑定的电脑叫什么；没绑定、电脑上解除了是 null */
+        fun lanName(): String? = null
+        /** 局域网正连着 */
+        fun lanConnected(): Boolean = false
+        /** 带去设置里放开后台限制（局域网息屏不断） */
+        fun openBatterySettings() {}
+        /** 扫码蓝牙配对正在等系统配对的结果（手机上弹着「配对」） */
+        fun btPairing(): Boolean = false
+        /** 蓝牙正连着 */
+        fun btConnected(): Boolean = false
     }
 
     private val context get() = host.context
@@ -91,11 +104,18 @@ class Setup(private val host: Host, private val overlays: Overlays) {
     @SuppressLint("MissingPermission")
     fun showPicker(onPick: (address: String, name: String) -> Unit) {
         lateinit var sheet: Overlays.Sheet
-        // 扫码不用蓝牙：没权限、蓝牙没开、手机没蓝牙时也要能点到
+        // 局域网扫码不用蓝牙：没权限、蓝牙没开、手机没蓝牙时也要能点到
         fun Overlays.Sheet.scanRow() {
-            row("扫码连接电脑", "不用蓝牙：手机和电脑连着同一个网络，扫电脑上的二维码") {
+            row("扫码走局域网", "不用蓝牙：手机和电脑连着同一个网络，扫电脑上的二维码") {
                 sheet.dismiss()
-                host.scanComputer()
+                host.scanComputer(ScanFor.LAN)
+            }
+        }
+        // 扫码蓝牙配对：不用去蓝牙设置里搜，扫一下、点「配对」
+        fun Overlays.Sheet.btScanRow() {
+            row("扫码配对新电脑", "扫电脑蒜鸟上的二维码，手机上点一下「配对」") {
+                sheet.dismiss()
+                host.scanComputer(ScanFor.BT)
             }
         }
         sheet = overlays.sheet build@{
@@ -105,6 +125,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
                     sheet.dismiss()
                     host.askBluetoothPermission()
                 }
+                btScanRow()
                 scanRow()
                 return@build
             }
@@ -116,6 +137,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
             }
             if (!adapter.isEnabled) {
                 row("手机蓝牙没开", "打开以后回到这里", trailing = overlays.chevron()) { host.openBluetoothSettings() }
+                btScanRow()
                 scanRow()
                 return@build
             }
@@ -124,7 +146,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
             val list = (if (showAll) bonded else bonded.filter(::isComputer))
                 .sortedWith(compareByDescending<BluetoothDevice> { it.address == current }.thenBy { it.name ?: "" })
             if (list.isEmpty()) {
-                row(if (showAll) "还没有配对过的设备" else "没找到配对过的电脑", "先在电脑的蓝牙设置里添加这部手机", enabled = false, trailing = null, onClick = null)
+                row(if (showAll) "还没有配对过的设备" else "没找到配对过的电脑", "扫码配对，或者去蓝牙设置里配对", enabled = false, trailing = null, onClick = null)
             }
             list.forEach { d ->
                 val name = d.name ?: "没有名字的设备"
@@ -144,6 +166,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
                 showAll = on
                 sheet.body.postDelayed({ sheet.refresh() }, 180)
             }
+            btScanRow()
             row("去蓝牙设置配对新电脑", null) { host.openBluetoothSettings() }
             scanRow()
         }

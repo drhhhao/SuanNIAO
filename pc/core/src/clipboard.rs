@@ -24,7 +24,7 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::{
     CF_BITMAP, CF_DIB, CF_DIBV5, CF_DSPBITMAP, CF_DSPENHMETAFILE, CF_DSPMETAFILEPICT, CF_ENHMETAFILE, CF_GDIOBJLAST,
-    CF_METAFILEPICT, CF_OWNERDISPLAY, CF_PALETTE, CF_PRIVATEFIRST, CF_UNICODETEXT, CLIPBOARD_FORMAT,
+    CF_HDROP, CF_METAFILEPICT, CF_OWNERDISPLAY, CF_PALETTE, CF_PRIVATEFIRST, CF_UNICODETEXT, CLIPBOARD_FORMAT,
 };
 
 /// 粘完多久放回原来的内容：目标程序要先把字读走
@@ -737,3 +737,63 @@ pub fn set_text(text: &str) -> Option<u32> {
     Some(sequence())
 }
 
+
+/// 一张图片放进剪贴板（手机发来的照片、截图：直接粘进聊天框）：32 位 CF_DIB；原文件是 PNG 的再放一份 PNG（留着透明）。
+/// 成功返回写完以后的剪贴板序号（clipsync 认出是自己写的，不发回手机）
+pub fn set_image(rgba: &image::RgbaImage, png: Option<&[u8]>) -> Option<u32> {
+    let (width, height) = rgba.dimensions();
+    let mut dib = Vec::with_capacity(40 + (width * height * 4) as usize);
+    dib.extend_from_slice(&40u32.to_le_bytes());
+    dib.extend_from_slice(&(width as i32).to_le_bytes());
+    dib.extend_from_slice(&(height as i32).to_le_bytes()); // 正数：自下而上
+    dib.extend_from_slice(&1u16.to_le_bytes());
+    dib.extend_from_slice(&32u16.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    dib.extend_from_slice(&(width * height * 4).to_le_bytes());
+    dib.extend_from_slice(&[0u8; 16]);
+    for y in (0..height).rev() {
+        for x in 0..width {
+            let [r, g, b, a] = rgba.get_pixel(x, y).0;
+            dib.extend_from_slice(&[b, g, r, a]);
+        }
+    }
+    let open = Opened::new()?;
+    unsafe {
+        EmptyClipboard().ok()?;
+        if !put_bytes(cf(CF_DIB), &dib) {
+            return None;
+        }
+        if let Some(png) = png {
+            put_bytes(png_format(), png);
+        }
+    }
+    drop(open);
+    Some(sequence())
+}
+
+/// 几个文件放进剪贴板，和在资源管理器里「复制」一样（CF_HDROP + 「复制」不是「剪切」）：粘进文件夹、聊天软件。
+/// 成功返回写完以后的剪贴板序号
+pub fn set_files(paths: &[std::path::PathBuf]) -> Option<u32> {
+    // DROPFILES：pFiles（文件名从第几个字节开始）、pt、fNC、fWide，后面是一个个以 0 结尾的 UTF-16 路径，最后再一个 0
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&20u32.to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 12]);
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    for path in paths {
+        for unit in path.as_os_str().to_string_lossy().encode_utf16().chain(Some(0)) {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    let drop_effect = unsafe { RegisterClipboardFormatW(w!("Preferred DropEffect")) };
+    let open = Opened::new()?;
+    unsafe {
+        EmptyClipboard().ok()?;
+        if !put_bytes(cf(CF_HDROP), &bytes) {
+            return None;
+        }
+        put_bytes(drop_effect, &1u32.to_le_bytes()); // DROPEFFECT_COPY
+    }
+    drop(open);
+    Some(sequence())
+}

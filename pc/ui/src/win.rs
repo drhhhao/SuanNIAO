@@ -687,6 +687,8 @@ pub enum FileDialog {
     RemoteMapping,
     Backup,
     SaveJson(String),
+    /// 选文件夹（从这个文件夹开始）
+    Folder(PathBuf),
 }
 
 /// 在单独的线程里开文件对话框，选完（或取消）以后在界面线程里调 done。
@@ -704,9 +706,52 @@ pub fn file_dialog(kind: FileDialog, done: impl FnOnce(Option<String>) + Send + 
             FileDialog::RemoteMapping => open_dialog(owner, "遥控器映射文件 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0\0", false),
             FileDialog::Backup => open_dialog(owner, "蒜鸟备份 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0\0", false),
             FileDialog::SaveJson(name) => save_json(owner, &name),
+            FileDialog::Folder(start) => pick_folder(owner, &start),
         };
         let _ = slint::invoke_from_event_loop(move || done(result));
     });
+}
+
+/// 选文件夹的对话框（系统的新式对话框）
+fn pick_folder(owner: HWND, start: &Path) -> Option<String> {
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS,
+        SIGDN_FILESYSPATH,
+    };
+    unsafe {
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()?;
+        dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).ok()?;
+        let _ = dialog.SetTitle(w!("手机发来的文件存到哪个文件夹"));
+        // 文件夹还没建（第一次用）时从它的上一层开始
+        let existing = start.ancestors().find(|p| p.is_dir());
+        if let Some(dir) = existing {
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dir.as_os_str()), None) {
+                let _ = dialog.SetFolder(&item);
+            }
+        }
+        dialog.Show(Some(owner)).ok()?;
+        let path = dialog.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let text = path.to_string().ok();
+        windows::Win32::System::Com::CoTaskMemFree(Some(path.0 as *const _));
+        text
+    }
+}
+
+/// 系统里「下载」文件夹的位置（可能被挪到了别的盘，比如 E:\Downloads）
+pub fn downloads_dir() -> PathBuf {
+    use windows::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
+    unsafe {
+        if let Ok(path) = SHGetKnownFolderPath(&FOLDERID_Downloads, KNOWN_FOLDER_FLAG(0), None) {
+            let text = path.to_string().unwrap_or_default();
+            windows::Win32::System::Com::CoTaskMemFree(Some(path.0 as *const _));
+            if !text.is_empty() {
+                return PathBuf::from(text);
+            }
+        }
+    }
+    PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into())).join("Downloads")
 }
 
 /// 在资源管理器里打开文件所在的文件夹，并选中这个文件

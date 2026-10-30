@@ -2,7 +2,6 @@ package dev.suanniao
 
 import android.Manifest
 import android.animation.ValueAnimator
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -71,6 +70,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             service.lastConfig?.let { latest -> if (latest.toString() != configText || editor != null) onConfig(latest) }
             applyStatus(service.status)
             checkPcVersion(service.pcApp)
+            service.wake() // 刚回到前台：后台时可能被系统冻结、局域网被掐断了
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -183,6 +183,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private var debugOpen = false
     private var latencyText: String? = null
     private var memText: String? = null
+    /** 发文件的进度上次在顶上显示的时刻 */
+    private var lastFileFlash = 0L
     private var versionWarned = false
     private var lastOfflineTouch = 0L
 
@@ -225,7 +227,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         resumed = true
         if (setup.onboardingOpen) setup.refreshOnboarding() // 可能刚从蓝牙设置、权限设置回来
         updateBanner()
+        link?.wake()
         main.postDelayed({ maybeOfferPending(force = false) }, 400)
+        main.postDelayed({ offerBattery(force = false) }, 900)
         updater.onResume() // 可能刚从「安装未知应用」设置、系统安装界面回来
         getSystemService(ClipboardManager::class.java)?.addPrimaryClipChangedListener(clipListener) // 在蒜鸟里复制的也同步
     }
@@ -253,6 +257,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     }
 
     override fun onDestroy() {
+        btPair.cancel()
         reusable.values.forEach { (it as? VoiceButton)?.release() }
         updater.detach()
         super.onDestroy()
@@ -300,9 +305,21 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 applyConfig(force = true)
             }
         }
-        // 当成扫到了这个文件里的二维码内容（测扫码绑定不用对着屏幕扫）
+        // 当成扫到了这个文件里的二维码内容（测扫码绑定不用对着屏幕扫）；debugPairFor = bt / lan 只做那一种
         intent.getStringExtra("debugPairFile")?.let { path ->
+            scanFor = when (intent.getStringExtra("debugPairFor")) {
+                "bt" -> Setup.ScanFor.BT
+                "lan" -> Setup.ScanFor.LAN
+                else -> Setup.ScanFor.ANY
+            }
             runCatching { File(path).readText() }.getOrNull()?.let { text -> main.postDelayed({ onScanned(text) }, 800) }
+        }
+        // 打开扫码界面，1.5 秒后当成扫到了这段内容（看「认出来了」「不是蒜鸟的码」动画，不真去连；见 ScanActivity）
+        if (BuildConfig.DEBUG) intent.getStringExtra("debugScanFake")?.let { fake ->
+            startActivityForResult(Intent(this, ScanActivity::class.java).putExtra(ScanActivity.EXTRA_MODE, "bt")
+                .putExtra(ScanActivity.EXTRA_LABEL, "蓝牙配对").putExtra(ScanActivity.EXTRA_DEBUG_FAKE, fake), REQ_SCAN)
+            @Suppress("DEPRECATION")
+            overridePendingTransition(R.anim.scan_enter, 0)
         }
         intent.getStringExtra("debugUpdateUrl")?.let { url ->
             val auto = intent.getBooleanExtra("debugUpdateAuto", false)
@@ -402,27 +419,80 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     /** 扫码绑定过电脑（而且电脑上没解除绑定） */
     private fun lanBound(): Boolean = LanBinding.load(this)?.revoked == false
 
+    override fun lanName(): String? = LanBinding.load(this)?.takeIf { !it.revoked }?.name
+
+    override fun lanConnected(): Boolean = link?.lanPhase == LinkService.LanPhase.CONNECTED
+
+    override fun btPairing(): Boolean = btPair.busy
+
+    override fun btConnected(): Boolean = link?.btConnected == true
+
     // ───────── 局域网：扫电脑上的二维码绑定 ─────────
 
     /** 刚从蒜鸟里点了「扫码连接电脑」的时刻：之后几分钟扫回来的链接不用再问一遍 */
     private var scanStartedAt = 0L
 
+    /** 这次扫码要连哪种（教程里选了蓝牙或局域网时只做那种）；扫完换回 ANY */
+    private var scanFor = Setup.ScanFor.ANY
+
     /**
-     * 扫码交给系统：小米手机打开「扫一扫」，扫到电脑二维码里的 suanniao://pair 链接会用蒜鸟打开（handleLinkIntent）。
-     * 蒜鸟自己不要相机权限：澎湃 OS 会把有相机权限的 App 限在 60 Hz。别的手机用自带相机扫，或者从相册选二维码图片
+     * 在蒜鸟里直接扫（zxing 的扫码界面）。第一次先说清楚相机拿来干什么再要权限；不给相机的话，可以从相册选二维码截图。
+     * 手机自带的相机、「扫一扫」扫到的 suanniao://pair 链接也能用蒜鸟打开（handleLinkIntent）
      */
-    override fun scanComputer() {
-        scanStartedAt = SystemClock.elapsedRealtime()
-        val scanner = Intent("miui.intent.action.scanbarcode").setPackage("com.xiaomi.scanner")
-        if (scanner.resolveActivity(packageManager) != null && runCatching { startActivityForResult(scanner, REQ_SCAN) }.isSuccess) {
-            flash("对准电脑上蒜鸟的二维码（电脑：设置 → 局域网连接 → 显示二维码）", 4000)
+    override fun scanComputer(forWhat: Setup.ScanFor) {
+        scanFor = forWhat
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            val canAsk = !prefs.getBoolean(KEY_CAMERA_ASKED, false) || shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+            overlays.dialog(
+                "扫码要用相机",
+                "只在扫电脑上的二维码时打开相机，不拍照、不存图。\n不想给的话，也可以把二维码截图、从相册里选。",
+                listOf(
+                    Btn("从相册选") { pickQrImage() },
+                    if (canAsk) Btn("允许", Style.PRIMARY) {
+                        prefs.edit().putBoolean(KEY_CAMERA_ASKED, true).apply()
+                        requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+                    } else Btn("去设置里打开", Style.PRIMARY) { openAppSettings() },
+                ),
+            )
             return
         }
-        overlays.dialog(
-            "扫电脑上的二维码",
-            "用手机自带的相机或「扫一扫」对准电脑上蒜鸟显示的二维码（电脑：设置 → 局域网连接 → 显示二维码），扫出来的链接选用蒜鸟打开。\n\n也可以把二维码拍下来或截图，从相册里选。",
-            listOf(Btn("知道了"), Btn("从相册选", Style.PRIMARY) { pickQrImage() }),
+        scanStartedAt = SystemClock.elapsedRealtime()
+        // 取景框上面的小标签：这次扫码做什么（ANY 时蓝牙开着才顺便配对，见 onScanned）
+        val (mode, label) = when (forWhat) {
+            Setup.ScanFor.BT -> "bt" to "蓝牙配对"
+            Setup.ScanFor.LAN -> "lan" to "局域网"
+            Setup.ScanFor.ANY -> if (bluetoothReady()) "any" to "蓝牙 + 局域网" else "lan" to "局域网"
+        }
+        startActivityForResult(
+            Intent(this, ScanActivity::class.java)
+                .putExtra(ScanActivity.EXTRA_MODE, mode)
+                .putExtra(ScanActivity.EXTRA_LABEL, label),
+            REQ_SCAN,
         )
+        @Suppress("DEPRECATION")
+        overridePendingTransition(R.anim.scan_enter, 0) // 整屏淡入，遮罩、四个角的进场动画扫码界面自己画
+    }
+
+    /** 菜单里「发文件到电脑」：系统的选文件界面，能多选 */
+    private fun pickFiles() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        runCatching { startActivityForResult(intent, REQ_PICK_FILES) }.onFailure { say("打不开选文件的界面") }
+    }
+
+    /** 选好了：趁着还有读权限先打开，交给连接服务慢慢发 */
+    private fun sendPicked(data: Intent) {
+        val uris = buildList {
+            data.clipData?.let { clip -> for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { add(it) } }
+            if (isEmpty()) data.data?.let { add(it) }
+        }
+        val l = link ?: return say("没连上电脑")
+        val items = FileSender.open(this, uris)
+        if (items.isEmpty()) return say("这些文件打不开，没法发")
+        l.files.enqueue(items)
+        flash(if (items.size == 1) "正在发到电脑：${items[0].name}" else "正在发到电脑：${items.size} 个文件", 3000)
     }
 
     private fun pickQrImage() {
@@ -431,16 +501,22 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             .onFailure { say("打不开相册") }
     }
 
-    @Deprecated("Activity 的老接口：扫一扫、相册用它回结果")
+    @Deprecated("Activity 的老接口：扫码界面、相册、选文件用它回结果")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         when (requestCode) {
-            // 扫一扫多半自己打开链接（回到 handleLinkIntent）；它要是把内容带回来了，也认
-            REQ_SCAN -> data?.extras?.also { extras ->
-                if (BuildConfig.DEBUG) extras.keySet().forEach { k -> android.util.Log.i("SuanNIAO-scan", "result $k = ${extras.get(k)}") }
-            }?.let { extras ->
-                extras.keySet().firstNotNullOfOrNull { k -> extras.get(k)?.toString()?.takeIf { it.startsWith("suanniao://") } }
-            }?.let { onScanned(it) }
+            REQ_SCAN -> if (resultCode == RESULT_OK && data != null) {
+                if (data.getBooleanExtra(ScanActivity.EXTRA_ALBUM, false)) pickQrImage()
+                else data.getStringExtra(ScanActivity.EXTRA_TEXT)?.let { onScanned(it) }
+            }
             REQ_PICK_QR -> data?.data?.let { uri -> decodeQrImage(uri) }
+            REQ_PICK_FILES -> if (resultCode == RESULT_OK && data != null) sendPicked(data)
+            REQ_ENABLE_BT -> pendingBtQr?.let { qr ->
+                if (resultCode == RESULT_OK) pairBluetooth(qr)
+                else {
+                    pendingBtQr = null
+                    say("没打开蓝牙，配对不了")
+                }
+            }
             else -> {
                 @Suppress("DEPRECATION")
                 super.onActivityResult(requestCode, resultCode, data)
@@ -485,7 +561,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         val text = data.toString()
         val qr = LanQr.parse(text)
         if (qr == null) {
-            say("这不是蒜鸟的二维码：在电脑上打开蒜鸟 →「设置」→「局域网连接」→「显示二维码」")
+            say(NOT_OUR_QR)
             return
         }
         val fresh = scanStartedAt != 0L && SystemClock.elapsedRealtime() - scanStartedAt < 5 * 60_000L
@@ -494,31 +570,98 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             main.post { onScanned(text) }
             return
         }
+        scanFor = Setup.ScanFor.ANY
+        val where = if (qr.addrs.isEmpty()) "" else "（${qr.addrs.joinToString("、")}）"
         main.post {
             overlays.dialog(
-                "绑定这台电脑？",
-                "「${qr.name}」（${qr.addrs.joinToString("、")}）\n绑定以后，手机和这台电脑连着同一个网络时，蒜鸟会自动用局域网连上它。",
-                listOf(Btn("取消"), Btn("绑定", Style.PRIMARY) { onScanned(text) }),
+                "连接这台电脑？",
+                "「${qr.name}」$where\n连接以后，蒜鸟会自动用蓝牙或局域网连上它。",
+                listOf(Btn("取消"), Btn("连接", Style.PRIMARY) { onScanned(text) }),
             )
         }
     }
 
-    /** 扫到的二维码内容：是蒜鸟电脑上的就去配对 */
+    /**
+     * 扫到的二维码内容：是蒜鸟电脑上的就去连。二维码里局域网地址、蓝牙地址可能都有：
+     * 教程里选了哪种就只做哪种；从菜单扫的（ANY）局域网能绑就绑，蓝牙在不用另外要权限、开蓝牙时顺便配对
+     * （电脑没连网、只能蓝牙时照样要）
+     */
     private fun onScanned(text: String) {
         if (BuildConfig.DEBUG) android.util.Log.i("SuanNIAO-scan", "scanned: $text")
+        val forWhat = scanFor.also { scanFor = Setup.ScanFor.ANY }
         val qr = LanQr.parse(text)
         if (qr == null) {
-            say("这不是蒜鸟的二维码：在电脑上打开蒜鸟 →「设置」→「局域网连接」→「显示二维码」")
+            say(NOT_OUR_QR)
             return
         }
-        startForegroundService(Intent(this, LinkService::class.java))
-        val l = link
-        if (l == null) {
-            say("服务还没准备好，稍等一下再扫")
+        val lan = forWhat != Setup.ScanFor.BT && qr.addrs.isNotEmpty()
+        val bt = qr.bt != null && forWhat != Setup.ScanFor.LAN && (forWhat == Setup.ScanFor.BT || bluetoothReady() || !lan)
+        when {
+            forWhat == Setup.ScanFor.BT && qr.bt == null ->
+                return say("这台电脑扫不了码配对（电脑上的蒜鸟太旧，或者电脑没有蓝牙）：更新电脑上的蒜鸟，或者去蓝牙设置里配对")
+            forWhat == Setup.ScanFor.LAN && !lan ->
+                return say("这台电脑现在没连网，用不了局域网：可以改用蓝牙")
+        }
+        if (lan) {
+            startForegroundService(Intent(this, LinkService::class.java))
+            val l = link
+            if (l == null) {
+                say("服务还没准备好，稍等一下再扫")
+                return
+            }
+            if (!bt) flash("正在连接「${qr.name}」…", 4000)
+            l.pairWith(qr, quietFail = bt)
+        }
+        if (bt) pairBluetooth(qr)
+    }
+
+    // ───────── 扫码蓝牙配对（BtPair.kt） ─────────
+
+    private val btPair by lazy { BtPair(this) }
+    /** 等「附近的设备」权限、等打开蓝牙的那次扫码，回来接着配对 */
+    private var pendingBtQr: LanQr? = null
+
+    /** 有蓝牙权限、蓝牙开着：扫码时顺便配对不用再弹别的框 */
+    private fun bluetoothReady(): Boolean =
+        hasBluetoothPermission() && runCatching { getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter?.isEnabled == true }.getOrDefault(false)
+
+    /** 对二维码里的电脑蓝牙地址发起配对（系统弹「配对」点一下），配上了就选这台电脑、把口令带给电脑核对 */
+    private fun pairBluetooth(qr: LanQr) {
+        val address = qr.bt ?: return
+        pendingBtQr = null
+        if (!hasBluetoothPermission()) {
+            pendingBtQr = qr
+            askBluetoothPermission()
             return
         }
-        flash("正在连接「${qr.name}」…", 4000)
-        l.pairWith(qr)
+        val adapter = getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter ?: return say("这部手机没有蓝牙")
+        if (!adapter.isEnabled) {
+            pendingBtQr = qr
+            runCatching { startActivityForResult(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE), REQ_ENABLE_BT) }
+                .onFailure {
+                    pendingBtQr = null
+                    say("先打开手机蓝牙，再扫一次")
+                }
+            return
+        }
+        flash("正在用蓝牙配对「${qr.name}」：在弹出的窗口里点「配对」", 8000)
+        btPair.start(address) { ok, message ->
+            setup.refreshOnboarding() // 教程里扫码配对那页：「正在配对…」换掉
+            if (!ok) {
+                say(message ?: "没配对上，再扫一次试试")
+                return@start
+            }
+            link?.setBtPairCode(address, qr.code) ?: LinkService.saveBtPairCode(this, address, qr.code)
+            Ui.buzz(root, Ui.Buzz.TAP)
+            chooseComputer(address, qr.name)
+            // 教程开着时 chooseComputer 不连；这里一定要马上连上去交口令，不然电脑 2 分钟后删掉这次配对
+            startLinkIfReady(address)
+            link?.retryNow() // 等配对时连接线程在歇着，马上叫醒
+            say("已用蓝牙配对「${qr.name}」，以后打开蒜鸟就会自动连上")
+            updateBanner()
+            menuSheet?.refresh()
+        }
+        setup.refreshOnboarding() // 教程里显示「正在配对…」
     }
 
     override fun onPairResult(ok: Boolean, message: String) {
@@ -526,6 +669,57 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         say(message)
         updateBanner()
         menuSheet?.refresh()
+        setup.refreshOnboarding() // 教程里扫码那页打勾
+        if (ok) main.postDelayed({ offerBattery(force = true) }, 1800)
+    }
+
+    // ───────── 局域网在后台别被掐断 ─────────
+
+    /**
+     * 扫码绑定过、后台还可能被限制：问一次。各家手机省电时都会在息屏、切到别的 App 一会儿以后冻结后台的 App、
+     * 掐断它的网络（澎湃 OS 默认「智能限制后台运行」），只连局域网时就断了（蓝牙不受影响）。改哪一项按牌子说，见 BackgroundGuide。
+     * force：刚扫码绑定成功，不管以前问没问过
+     */
+    private fun offerBattery(force: Boolean) {
+        if (!resumed || !lanBound() || !BackgroundGuide.worthOpening(this) || setup.onboardingOpen) return
+        if (!force && prefs.getBoolean(KEY_BATTERY_ASKED, false)) return
+        prefs.edit().putBoolean(KEY_BATTERY_ASKED, true).apply()
+        overlays.dialog(
+            "让局域网在后台也连着",
+            "手机省电时会在息屏、切到别的 App 一会儿以后冻结蒜鸟，局域网就断了（蓝牙不受影响）。\n\n点「去设置」，${BackgroundGuide.howTo()}。",
+            listOf(Btn("以后再说"), Btn("去设置", Style.PRIMARY) { openBatterySettings() }),
+        )
+    }
+
+    override fun openBatterySettings() {
+        if (!BackgroundGuide.open(this)) say("打不开设置：到手机「设置 → 应用 → 蒜鸟」里，${BackgroundGuide.howTo()}")
+    }
+
+    /**
+     * 局域网发文件明显比平常慢（见 FileSender.Slow）：按当时的情况说怎么快起来，一天最多说一次。
+     * 蒜鸟开在前台时慢：有的手机（实测小米澎湃 OS）把前台 App 的上传排进 Wi-Fi 的视频优先级，大块数据又慢又丢包，
+     * App 自己改不了（试过 TOS、SO_PRIORITY），从别的 App 分享过来（蒜鸟在后台）就快。
+     * 在后台也慢、后台限制没放开：多半是系统在限制蒜鸟，带去设置。别的情况（网络本身慢）不说。
+     */
+    private fun offerFaster(kbps: Int, foreground: Boolean) {
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong(KEY_SLOW_HINT_AT, 0L) < 20 * 3600_000L) return
+        val head = "局域网平常每秒能发好几 MB，这次每秒只有 $kbps KB。"
+        when {
+            foreground -> overlays.dialog(
+                "这次发得慢",
+                head + "有的手机会在蒜鸟开着的时候换一种方式安排它的网络，发大文件反而慢。\n\n" +
+                    "下次在相册、文件管理里选好文件，点「分享 → 蒜鸟」，不用打开蒜鸟，会快很多。",
+                listOf(Btn("知道了", Style.PRIMARY)),
+            )
+            !BackgroundGuide.free(this) -> overlays.dialog(
+                "这次发得慢",
+                head + "多半是手机在后台限制了蒜鸟。\n\n点「去设置」，${BackgroundGuide.howTo()}。",
+                listOf(Btn("以后再说"), Btn("去设置", Style.PRIMARY) { openBatterySettings() }),
+            )
+            else -> return
+        }
+        prefs.edit().putLong(KEY_SLOW_HINT_AT, now).apply()
     }
 
     private fun lanLine(b: LanBinding): String = when {
@@ -540,7 +734,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private fun forgetLan(b: LanBinding) {
         overlays.dialog(
             "解除局域网绑定？",
-            "这部手机不再用局域网连「${b.name}」，蓝牙照常能用。以后想用要重新扫码。\n电脑上的绑定记录在电脑的「设置 → 局域网连接」里删。",
+            "这部手机不再用局域网连「${b.name}」，蓝牙照常能用。以后想用要重新扫码。\n电脑上的绑定记录在电脑的「设置 → 扫码连接」里删。",
             listOf(Btn("取消"), Btn("解除", Style.DANGER) {
                 link?.forgetLan() ?: LanBinding.save(this, null)
                 updateBanner()
@@ -576,9 +770,14 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
         when (requestCode) {
             REQ_MIC -> say(if (granted) "好了，按住语音键说话" else "没有麦克风权限，语音用不了；想用时再按一下语音键")
+            REQ_CAMERA -> if (granted) scanComputer(scanFor) else say("没有相机权限就扫不了码：可以把二维码截图从相册选，或者用蓝牙连电脑")
             REQ_BLUETOOTH -> {
                 if (setup.onboardingOpen) setup.refreshOnboarding()
-                if (granted) startLinkIfReady() else say("没有「附近的设备」权限就连不了电脑，随时可以在顶上的提示条里重新允许")
+                val qr = pendingBtQr
+                pendingBtQr = null
+                if (granted && qr != null) pairBluetooth(qr) // 扫码配对时要的权限：接着配对
+                else if (granted) startLinkIfReady()
+                else say("没有「附近的设备」权限就连不了电脑，随时可以在顶上的提示条里重新允许")
                 updateBanner()
             }
         }
@@ -1085,6 +1284,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         showBase(animate = true)
         menuSheet?.refresh()
         pendingSheet?.refresh()
+        setup.refreshOnboarding() // 教程开着时，扫码那页跟着局域网连没连上变
     }
 
     override fun onLinkStatus(status: LinkService.Status) = applyStatus(status)
@@ -1424,6 +1624,10 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             checked = if (pend != null) !pend else mappingPaused,
             enabled = connected && pend == null,
         ) { on -> requestEnabled(!on) }
+        row("发文件到电脑", if (connected) "照片、文档发过去；相册里分享给蒜鸟也行" else "连上电脑后才能用", enabled = connected) {
+            s.dismiss()
+            pickFiles()
+        }
 
         section("语音识别")
         val models = LocalAsr.models(this@MainActivity)
@@ -1450,9 +1654,15 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             pickComputer()
         }
         val lan = LanBinding.load(this@MainActivity)
-        row("扫码连接电脑", if (lan == null) "不用蓝牙：手机和电脑连着同一个网络就行" else lanLine(lan)) {
+        row("扫码连接电脑", if (lan == null) "蓝牙配对；同一个网络里还能走局域网" else lanLine(lan)) {
             s.dismiss()
             scanComputer()
+        }
+        if (lan != null && !lan.revoked && BackgroundGuide.worthOpening(this@MainActivity)) {
+            row("后台保持局域网", "别让手机在后台限制蒜鸟，息屏也不断") {
+                s.dismiss()
+                openBatterySettings()
+            }
         }
         if (lan != null) {
             row("解除局域网绑定", "只在这部手机上忘掉「${lan.name}」", trailing = null) {
@@ -2082,6 +2292,22 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             "clipImgEnd" -> if (msg.has("ok")) {
                 flash(if (msg.optBoolean("ok")) "电脑上复制的图片已放进手机剪贴板" else "图片没收全，没放进剪贴板", 2500)
             }
+            // 正在发文件到电脑（见 FileSender）：顶上显示进度，一秒最多换一次
+            "fileProgress" -> {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastFileFlash >= 1000 || msg.optLong("sent") == msg.optLong("size")) {
+                    lastFileFlash = now
+                    val size = msg.optLong("size")
+                    val count = msg.optInt("count")
+                    val pct = if (size > 0) "${msg.optLong("sent") * 100 / size}%" else FileSender.human(msg.optLong("sent"))
+                    flash("正在发到电脑" + (if (count > 1) " ${msg.optInt("index") + 1}/$count" else "") + " · $pct", 3000)
+                }
+            }
+            "filesDone" -> {
+                lastFileFlash = 0L
+                say(msg.optString("text"))
+                if (msg.has("slowKBps")) offerFaster(msg.optInt("slowKBps"), msg.optBoolean("slowFg"))
+            }
             "mem" -> {
                 memText = "工作集 %.1f MB · 私有 %.1f MB".format(msg.optDouble("ws") / 1_048_576, msg.optDouble("private") / 1_048_576)
                 menuSheet?.refresh()
@@ -2260,6 +2486,10 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         private const val KEY_GUIDE_SEEN = "gesture_guide_seen"
         private const val KEY_BT_ASKED = "bt_permission_asked"
         private const val KEY_MIC_ASKED = "mic_permission_asked"
+        /** 问过要不要把省电策略改成「无限制」（只主动问一次，菜单里一直能改） */
+        private const val KEY_BATTERY_ASKED = "battery_asked"
+        /** 上次提示「发文件慢，怎么快起来」的时间 */
+        private const val KEY_SLOW_HINT_AT = "slow_hint_at"
         /** 已经提示过「电脑端版本较旧」的那个版本 */
         private const val KEY_WARNED_PC_VERSION = "warned_pc_version"
         private const val DOT_OFFLINE = 0
@@ -2267,8 +2497,13 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         private const val REQ_BLUETOOTH = 1
         private const val REQ_MIC = 2
         private const val REQ_NOTIFY = 3
-        private const val REQ_SCAN = 4
+        private const val REQ_CAMERA = 4
+        private const val KEY_CAMERA_ASKED = "camera_asked"
         private const val REQ_PICK_QR = 5
+        private const val REQ_PICK_FILES = 6
+        private const val REQ_ENABLE_BT = 7
+        private const val REQ_SCAN = 8
+        private const val NOT_OUR_QR = "这不是蒜鸟的二维码：在电脑蒜鸟「设置 → 扫码连接」里点「显示二维码」"
         /** 没连上超过这么久才出横幅、顶栏才说「未连接电脑」 */
         private const val OFFLINE_GRACE_MS = 1500L
         /** 闲置这么久把屏幕调暗 */

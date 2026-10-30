@@ -91,8 +91,22 @@ fn notify(op: NOTIFY_ICON_MESSAGE) {
     }
 }
 
-/// 在托盘弹一个通知（任何线程都可以调）。现在只有「有新版本」这一种，用户点了通知就打开更新窗口
+/// 托盘通知被点了以后做什么：None = 打开更新窗口（「有新版本」），Some = 在文件夹里选中这个文件（收到了手机发来的文件）
+static BALLOON_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// 在托盘弹一个「有新版本」的通知（任何线程都可以调），用户点了通知就打开更新窗口
 pub fn balloon(title: &str, text: &str) {
+    *BALLOON_FILE.lock().unwrap() = None;
+    show_balloon(title, text);
+}
+
+/// 弹「收到了手机发来的文件」的通知，点了在资源管理器里选中 file
+pub fn balloon_file(title: &str, text: &str, file: std::path::PathBuf) {
+    *BALLOON_FILE.lock().unwrap() = Some(file);
+    show_balloon(title, text);
+}
+
+fn show_balloon(title: &str, text: &str) {
     let hwnd = WINDOW.load(Ordering::Relaxed);
     if hwnd == 0 {
         return;
@@ -216,7 +230,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         match (lparam.0 & 0xFFFF) as u32 {
             WM_LBUTTONUP => open_ui(),
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
-            NIN_BALLOONUSERCLICK => open_update(),
+            NIN_BALLOONUSERCLICK => match BALLOON_FILE.lock().unwrap().take() {
+                Some(file) => crate::filerecv::reveal(&file),
+                None => open_update(),
+            },
             _ => {}
         }
         return LRESULT(0);

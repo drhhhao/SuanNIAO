@@ -13,8 +13,8 @@ android {
         applicationId = "dev.suanniao"
         minSdk = 28
         targetSdk = 35
-        versionCode = 26
-        versionName = "0.9.11"
+        versionCode = 34
+        versionName = "0.9.19"
         // 只给 64 位 ARM 手机用，本地语音识别的原生库只打这一种，安装包小很多
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -96,6 +96,9 @@ androidComponents {
 dependencies {
     // 本地流式语音识别：https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1
     implementation(files("libs/sherpa-onnx-2.0.1.aar"))
-    // 从相册里选的二维码图片认出内容（没有小米「扫一扫」的手机用）。扫码本身交给系统，蒜鸟不要相机权限
+    // 扫电脑上的二维码（局域网绑定）：https://github.com/journeyapps/zxing-android-embedded
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0") { isTransitive = false }
     implementation("com.google.zxing:core:3.5.3")
+    // 扫码库申请相机权限时用到（ActivityCompat / ContextCompat）。只要它本身：带上依赖会多出协程、lifecycle 等好几 MB
+    implementation("androidx.core:core:1.13.1") { isTransitive = false }
 }

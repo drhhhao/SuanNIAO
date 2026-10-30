@@ -21,18 +21,17 @@
          只用局域网、没给蓝牙权限时，「连接的设备」类前台服务靠 CHANGE_NETWORK_STATE 满足 Android 14 的要求 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    <!-- 不要相机权限：澎湃 OS 把声明了相机权限的 App 归到「跟随应用内设置」，蒜鸟就只有 60 Hz（实测，去掉就是 120 Hz）。
-         扫码交给系统的「扫一扫」/ 相机，扫到的 suanniao://pair 链接由下面的 MainActivity 打开。
-         这里写 remove，免得以后加的库把相机权限带进来 -->
-    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <!-- 打开「省电策略」页让用户选「无限制」：不然息屏、切到别的 App 一会儿后局域网会被系统掐断 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 扫电脑上的二维码（只在点「扫码连接电脑」时用）。2026-10-30 在小米 13 上复测：声明、授权、真的打开相机，都还是 120 Hz -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Android 11 起要声明才能找到系统的语音识别服务 -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
-        <!-- 扫码绑定电脑：打开小米「扫一扫」 -->
-        <package android:name="com.xiaomi.scanner" />
     </queries>
 
     <application
@@ -56,6 +55,30 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="suanniao" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <!-- 扫电脑上二维码的界面（蒜鸟自己画的，相机和识别用 zxing-android-embedded；见 ScanActivity.kt） -->
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/SuanNiao.Scan" />
+
+        <!-- 系统「分享」菜单里的「蒜鸟」：把文件（或一段文字）发到电脑。看不见，交给连接服务就关掉（见 ShareActivity.kt） -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="蒜鸟"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
 

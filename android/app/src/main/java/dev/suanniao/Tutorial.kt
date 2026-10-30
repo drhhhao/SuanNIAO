@@ -48,7 +48,8 @@ import kotlin.math.sin
 
 /**
  * 使用教程：整屏，左右滑或点下面的按钮翻页。每页上面一幅会动的小画，下面几句大白话。
- * 页：0 欢迎 · 1 在电脑上打开蒜鸟 · 2 蓝牙配对 · 3 选电脑 · 4 触控板 · 5 按键 · 6 语音 · 7 ⋯ 菜单 · 8 准备好了
+ * 页：欢迎 · 在电脑上打开蒜鸟 · 选连接方式 · （蓝牙：配对 · 选电脑｜局域网：扫码） · 触控板 · 按键 · 语音 · ⋯ 菜单 · 准备好了
+ * 只走选中的那条路：没走的页不显示、不算圆点（还没选时按蓝牙那条算）；没选之前翻不过选择页
  * - 第一次打开时自动出来（firstRun）：连电脑那几步就在这里做，做完的打上勾；「跳过」「开始使用」都进主界面
  * - ⋯ 菜单里能再看：右上角是「关闭」，最后一页是「完成」
  * 小画按 300×240 的设计尺寸画，等比缩放放在正中；关了系统动画时停在有代表性的一帧
@@ -87,30 +88,65 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
     private lateinit var corner: TextView
     private lateinit var pager: Pager
     private lateinit var nav: NavBar
+    /** 所有页（搭一次） */
+    private val allPages = ArrayList<PageView>()
+    /** 现在要走的页（按选的连接方式），翻页、圆点都按它 */
     private val pages = ArrayList<PageView>()
+    private val last get() = pages.size - 1
+
+    /** 选的连接方式：null 还没选 */
+    private enum class Mode { BT, LAN }
+    private var mode: Mode? = null
+    private lateinit var choicePage: PageView
+    private lateinit var pairPage: PageView
+    private lateinit var pickPage: PageView
+    private lateinit var lanPage: PageView
+    /** 蓝牙那条路的主路：扫码配对（配对 + 选电脑一步做完）；btManual 时换成原来的配对、选电脑两页 */
+    private lateinit var btScanPage: PageView
+    private var btManual = false
+    private lateinit var padPage: PageView
+    private lateinit var btOption: OptionCard
+    private lateinit var lanOption: OptionCard
+    private lateinit var nextLine: TextView
+    private lateinit var pathNote: TextView
+    private lateinit var batteryHolder: FrameLayout
+    private var batteryKey: String? = null
+    private val limeBg get() = if (palette.dark) 0xFF33441A.toInt() else 0xFFDCF7A1.toInt()
+    private val limeInk get() = if (palette.dark) 0xFFB9EC6A.toInt() else 0xFF3D5C0E.toInt()
 
     // 连电脑那几页里跟着状态变的部分
     private lateinit var phoneStep: TextView
     private lateinit var pairHolder: FrameLayout
     private lateinit var pickHolder: FrameLayout
+    private lateinit var lanHolder: FrameLayout
+    private lateinit var btScanHolder: FrameLayout
+    private var btScanKey: String? = null
     private lateinit var doneNote: View
     private lateinit var pairScene: PairScene
     private lateinit var pickScene: PickScene
     private var pairKey: String? = null
     private var pickKey: String? = null
+    private var lanKey: String? = null
 
     // ───────── 打开、关上 ─────────
 
     fun show(firstRun: Boolean, page: Int = 0) {
-        val target = page.coerceIn(0, LAST)
         if (isOpen) {
-            pager.settle(target)
+            pager.settle(page.coerceIn(0, last))
             return
         }
         this.firstRun = firstRun
-        current = target
-        reachedPad = target >= PAD
+        btManual = false
+        // 从菜单打开：按现在在用的方式先选好
+        mode = if (firstRun) null else when {
+            host.lanName() != null && (host.savedAddress() == null || host.lanConnected()) -> Mode.LAN
+            host.savedAddress() != null -> Mode.BT
+            else -> null
+        }
         build()
+        val target = page.coerceIn(0, last)
+        current = target
+        reachedPad = target >= pages.indexOf(padPage)
         update(animate = false)
         screen = overlays.screen(root).apply {
             onBack = { back() }
@@ -153,12 +189,76 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
     }
 
     private fun primary() {
-        if (current < LAST) pager.settle(current + 1) else finish()
+        when {
+            blocked(current) -> Ui.buzz(root, Ui.Buzz.TICK)
+            current < last -> pager.settle(current + 1)
+            else -> finish()
+        }
+    }
+
+    /** 选择页还没选：翻不过去 */
+    private fun blocked(i: Int) = mode == null && pages.getOrNull(i) === choicePage
+
+    /** 选了连接方式：换要走的页、圆点、按钮、选择页上的卡片 */
+    private fun choose(m: Mode) {
+        if (mode == m) return
+        mode = m
+        Ui.buzz(root, Ui.Buzz.TAP)
+        reroute()
+    }
+
+    /** 扫码配对那页底下「改用系统蓝牙配对」/ 配对页底下「改回扫码配对」：原地换成另一套页，停在同一个位置 */
+    private fun useManual(on: Boolean) {
+        if (btManual == on) return
+        btManual = on
+        Ui.buzz(root, Ui.Buzz.TAP)
+        reroute()
+    }
+
+    private fun reroute() {
+        route()
+        pager.layoutPages()
+        nav.setLabel(labelFor(current), animate = true)
+        nav.dimTo(blocked(current))
+        update(animate = true)
+    }
+
+    /** 按选的方式排出要走的页 */
+    private fun route() {
+        pages.clear()
+        allPages.filterTo(pages) {
+            when (it) {
+                btScanPage -> mode != Mode.LAN && !btManual
+                pairPage, pickPage -> mode != Mode.LAN && btManual
+                lanPage -> mode == Mode.LAN
+                else -> true
+            }
+        }
+        if (::dots.isInitialized) dots.requestLayout()
+        btOption.chosen = mode == Mode.BT
+        lanOption.chosen = mode == Mode.LAN
+        nextLine.text = rich(
+            when (mode) {
+                Mode.BT -> if (btManual) "**接下来：蓝牙配对 → 选电脑**" else "**接下来：扫一下电脑上的二维码，配上蓝牙**"
+                Mode.LAN -> "**接下来：扫一下电脑上的二维码**"
+                null -> ""
+            },
+        )
+        nextLine.visibility = if (mode == null) View.GONE else View.VISIBLE
+        pathNote.text = rich(
+            when (mode) {
+                Mode.BT -> "想更快、传文件更方便：⋯ → **扫码连接电脑**，走局域网。"
+                Mode.LAN -> "没有网也想用：⋯ → 选择电脑 → **扫码配对新电脑**。"
+                null -> ""
+            },
+        )
+        pathNote.visibility = if (mode == null) View.GONE else View.VISIBLE
     }
 
     private fun labelFor(i: Int) = when {
         i == 0 -> "开始"
-        i < LAST -> "下一步"
+        blocked(i) -> "先选一种"
+        i < last -> "下一步"
         firstRun -> "开始使用"
         else -> "完成"
     }
@@ -167,8 +267,9 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
     private fun select(i: Int) {
         if (i == current) return
         current = i
-        if (i >= PAD) reachedPad = true
+        if (i >= pages.indexOf(padPage)) reachedPad = true
         nav.setLabel(labelFor(i), animate = true)
+        nav.dimTo(blocked(i))
         Ui.buzz(root, Ui.Buzz.TICK)
     }
 
@@ -176,7 +277,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
     private fun moved(pos: Float) {
         dots.pos = pos
         nav.t = pos.coerceIn(0f, 1f)
-        val a = (LAST - pos).coerceIn(0f, 1f)
+        val a = (last - pos).coerceIn(0f, 1f)
         corner.alpha = a
         corner.isEnabled = a > 0.5f
         corner.visibility = if (a > 0f) View.VISIBLE else View.INVISIBLE
@@ -186,8 +287,12 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
 
     private fun build() {
         pages.clear()
+        allPages.clear()
+        batteryKey = null
         pairKey = null
         pickKey = null
+        lanKey = null
+        btScanKey = null
         root = object : FrameLayout(context) {
             // 状态栏、导航条有多高，可能等教程出来以后才知道（刚启动、换深浅色重建界面时）：每次排版完对一下
             private val barsWatch = ViewTreeObserver.OnGlobalLayoutListener { fitBars() }
@@ -234,10 +339,12 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
 
         pager = Pager(context)
         buildPages()
-        pages.forEach { pager.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
+        allPages.forEach { pager.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
+        route()
         column.addView(pager, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         nav = NavBar(context)
+        nav.dimTo(blocked(current), animate = false)
         column.addView(nav, LinearLayout.LayoutParams(MATCH_PARENT, dp(54f)).apply { setMargins(dp(20f), dp(8f), dp(20f), dp(16f)) })
     }
 
@@ -251,7 +358,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
     private fun buildPages() {
         page(HelloScene(context, done = false), 0.56f, center = true) {
             title("欢迎使用蒜鸟")
-            para("蒜鸟能把这部手机变成电脑的**触控板**、**快捷键**和**语音输入**。手机和电脑用蓝牙连在一起，不用网络，也不用数据线。", 14f)
+            para("蒜鸟能把这部手机变成电脑的**触控板**、**快捷键**和**语音输入**。手机和电脑用蓝牙或同一个网络连在一起，不用数据线。", 14f)
             para("跟着往下看，一两分钟就能学会。")
         }
         page(PcScene(context), 0.5f) {
@@ -260,25 +367,57 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             para("电脑上也要装好蒜鸟。打开以后，屏幕右下角的托盘里会出现这只小鸟（没看到就点一下托盘的「^」），说明它在等手机来连。")
             para("电脑上的窗口关掉也没关系，托盘里还有小鸟就行。")
         }
-        pairScene = PairScene(context)
-        page(pairScene, 0.4f) {
+        choicePage = page(ChoiceScene(context), 0.34f) {
             eyebrow("连接电脑 · 第 2 步")
+            title("选一种连接方式")
+            para("两种都能用。先选一种连上，另一种以后也能加。")
+            btOption = OptionCard(context, Mode.BT, "蓝牙", "稳定", "不用网络，在哪都能连", "传文件慢些，大照片会先压缩")
+            extra(btOption, 16f)
+            lanOption = OptionCard(context, Mode.LAN, "局域网", "更快", "手机和电脑连同一个 Wi-Fi 时用", "延迟更低，传文件快得多")
+            extra(lanOption, 10f)
+            nextLine = para("", 14f)
+            para("拿不准就选蓝牙。电脑上的教程也选同一种。", 8f).textSize = 13f
+        }
+        btScanPage = page(BtScanScene(context), 0.36f) {
+            eyebrow("连接电脑 · 第 3 步")
+            title("扫码配对电脑")
+            para("不用去蓝牙设置里搜。扫一次就行，配好自动选上这台电脑，以后打开蒜鸟就会自动连上。")
+            step(1, "**电脑**：蒜鸟里点「扫码配对」或「显示二维码」。", 14f)
+            step(2, "**手机**：点下面的「扫码」，对准二维码。")
+            step(3, "手机弹出**「配对」**，点一下就好。")
+            btScanHolder = holder()
+            link("扫不了码？**改用系统蓝牙配对 ›**") { useManual(true) }
+        }
+        pairScene = PairScene(context)
+        pairPage = page(pairScene, 0.4f) {
+            eyebrow("连接电脑 · 第 3 步")
             title("让手机和电脑蓝牙配对")
             para("配对只要做一次，以后不用再配。")
             step(1, "**手机**：打开蓝牙设置页，停在那一页别退出，电脑才找得到这部手机。", 14f)
             phoneStep = step(2, "")
             step(3, "两边会弹出同一串数字，核对一样后两边都点确认（「配对」或「连接」）。")
             pairHolder = holder()
+            link("想省事：**改回扫码配对 ›**") { useManual(false) }
         }
         pickScene = PickScene(context)
-        page(pickScene, 0.46f) {
-            eyebrow("连接电脑 · 第 3 步")
+        pickPage = page(pickScene, 0.46f) {
+            eyebrow("连接电脑 · 第 4 步")
             title("在手机上选你的电脑")
             para("从配对过的设备里点你的电脑。选好以后，只要两边都开着蒜鸟，就会自动连上。")
             pickHolder = holder()
         }
+        lanPage = page(LanScene(context), 0.36f) {
+            eyebrow("连接电脑 · 第 3 步")
+            title("扫一下电脑上的二维码")
+            para("扫一次就行，以后手机和电脑在**同一个网络**里，打开蒜鸟就会自动连上。")
+            step(1, "**电脑**：「设置 → 扫码连接 → 显示二维码」。")
+            step(2, "**手机**：点下面的「扫码」，对准电脑上的二维码。")
+            lanHolder = holder()
+            batteryHolder = holder(10f)
+            para("连不上？看看是不是同一个 Wi-Fi，或者回上一步选蓝牙。", 12f).textSize = 13f
+        }
         val grid = GestureGrid(context)
-        page(PadScene(context) { grid.highlight(it) }, 0.44f) {
+        padPage = page(PadScene(context) { grid.highlight(it) }, 0.44f) {
             eyebrow("怎么用 · 触控板")
             title("手指一滑，鼠标就跟着动")
             para("和笔记本电脑的触控板一样用：")
@@ -306,12 +445,12 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             title("准备好了！")
             para("以后只要电脑上开着蒜鸟，手机打开蒜鸟就会自动连上。", 14f)
             doneNote = tip("还没选电脑也没关系，可以先看看界面，之后在顶上的提示条或 ⋯ 菜单里选。", 18f)
+            pathNote = tip("", 10f)
         }
     }
 
-    private fun page(scene: Scene, share: Float, center: Boolean = false, fill: PageView.() -> Unit) {
-        pages += PageView(context, scene, share, center).apply(fill)
-    }
+    private fun page(scene: Scene, share: Float, center: Boolean = false, fill: PageView.() -> Unit): PageView =
+        PageView(context, scene, share, center).apply(fill).also { allPages += it }
 
     /** 刚打开：字一行行浮上来，按钮最后到 */
     private fun intro() {
@@ -362,7 +501,40 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             swap(pickHolder, pickCard(perm, paired, address, name), animate && pickKey != null)
             pickKey = pickNow
         }
-        doneNote.visibility = if (address == null) View.VISIBLE else View.GONE
+        // 扫码配对那页：选好的电脑配上了就打勾（连着蓝牙写「已用蓝牙连上」）；手机上弹着「配对」时转圈
+        val bonded = address != null && setup.pairedComputers().any { it.address.equals(address, ignoreCase = true) }
+        val btScanNow = when {
+            !perm -> "perm"
+            host.btPairing() -> "pairing"
+            bonded && host.btConnected() -> "up $name"
+            bonded -> "done $name"
+            else -> "none"
+        }
+        if (btScanNow != btScanKey) {
+            if (animate && (btScanNow.startsWith("up") || btScanNow.startsWith("done")) && btScanKey?.let { it == "none" || it == "pairing" } == true) {
+                Ui.buzz(root, Ui.Buzz.CONFIRM)
+            }
+            swap(btScanHolder, btScanCard(btScanNow, name), animate && btScanKey != null)
+            btScanKey = btScanNow
+        }
+        val lanName = host.lanName()
+        val lanUp = lanName != null && host.lanConnected()
+        val lanNow = if (lanName == null) "none" else "done $lanUp $lanName"
+        if (lanNow != lanKey) {
+            if (animate && lanName != null && lanKey == "none") Ui.buzz(root, Ui.Buzz.CONFIRM)
+            swap(lanHolder, lanCard(lanName, lanUp), animate && lanKey != null)
+            lanKey = lanNow
+        }
+        doneNote.visibility = if (address == null && lanName == null) View.VISIBLE else View.GONE
+        // 后台还被限制着（小米：省电策略不是「无限制」）：息屏、切走一会儿局域网会被系统掐断
+        val batteryNow = if (BackgroundGuide.worthOpening(context)) "ask" else "free"
+        if (batteryNow != batteryKey) {
+            batteryHolder.visibility = if (batteryNow == "free") View.GONE else View.VISIBLE
+            if (batteryNow == "ask") {
+                swap(batteryHolder, stepCard(false, "让局域网在后台也连着", BackgroundGuide.howTo(), Btn("去设置") { host.openBatterySettings() }), animate && batteryKey != null)
+            }
+            batteryKey = batteryNow
+        }
     }
 
     /** 换卡片：旧的淡出，新的稍后从下面浮上来 */
@@ -394,6 +566,25 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             if (paired == 0) "还没配对过电脑的话，先回上一步配对。" else "列表里只有配对过的电脑。",
         )
         else -> doneCard(if (name != null) "已选：$name" else "已选好电脑", "连上后通知栏会显示连接状态", Btn("换一台") { pick() })
+    }
+
+    /** 扫码那页：没扫过是空圈 +「扫码」；扫过了打勾，写着连没连上 */
+    private fun lanCard(name: String?, up: Boolean): View = when {
+        name == null -> stepCard(false, "还没扫码", "扫好了这里会打勾", Btn("扫码", Style.PRIMARY) { host.scanComputer(Setup.ScanFor.LAN) })
+        up -> stepCard(true, "已用局域网连上", name, Btn("重扫") { host.scanComputer(Setup.ScanFor.LAN) })
+        else -> stepCard(true, "已扫码绑定「$name」", "在同一个网络里会自动连上", Btn("重扫") { host.scanComputer(Setup.ScanFor.LAN) })
+    }
+
+    /** 扫码配对那页：没配是空圈 +「扫码」，等确认时转圈，配上了打勾、写连没连上 */
+    private fun btScanCard(state: String, name: String?): View {
+        val scan = { host.scanComputer(Setup.ScanFor.BT) }
+        return when {
+            state == "perm" -> permCard()
+            state == "pairing" -> stepCard(false, "正在配对…", "在弹出的窗口里点「配对」", null, spinning = true)
+            state.startsWith("up") -> stepCard(true, "已用蓝牙连上", name ?: "电脑", Btn("换一台") { scan() })
+            state.startsWith("done") -> stepCard(true, if (name != null) "已配对「$name」" else "已配对", "两边都开着蒜鸟就会自动连上", Btn("换一台") { scan() })
+            else -> stepCard(false, "还没配对", "配好了这里会打勾", Btn("扫码", Style.PRIMARY) { scan() })
+        }
     }
 
     private fun pick() {
@@ -430,10 +621,18 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
     }
 
     /** 这一步做完了：勾 + 一句话 + 一个小按钮（再来一次） */
-    private fun doneCard(title: String, sub: String, btn: Btn): View = card().apply {
+    private fun doneCard(title: String, sub: String, btn: Btn): View = stepCard(true, title, sub, btn)
+
+    /** 一步的卡片：做完了是勾，还没做是一个空圈，正在做是转圈（没有按钮） */
+    private fun stepCard(done: Boolean, title: String, sub: String, btn: Btn?, spinning: Boolean = false): View = card().apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        addView(DoneBadge(context), LinearLayout.LayoutParams(dp(30f), dp(30f)))
+        val badge = when {
+            done -> DoneBadge(context)
+            spinning -> SpinBadge(context)
+            else -> View(context).apply { background = Ui.round(0, dpf(15f), dp(1.6f), palette.line) }
+        }
+        addView(badge, LinearLayout.LayoutParams(dp(30f), dp(30f)))
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             addView(overlays.text(title, 15.5f, 850, palette.fg).apply {
@@ -442,7 +641,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             })
             addView(overlays.text(sub, 12.5f, 650, palette.sub).apply { setPadding(0, dp(3f), 0, 0) })
         }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(12f) })
-        addView(overlays.button(btn).apply {
+        if (btn != null) addView(overlays.button(btn).apply {
             textSize = 13.5f
             setPadding(dp(14f), 0, dp(14f), 0)
         }, LinearLayout.LayoutParams(WRAP_CONTENT, dp(36f)).apply { marginStart = dp(10f) })
@@ -492,7 +691,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val h = View.MeasureSpec.getSize(heightMeasureSpec)
-            pages.forEach { it.fitScene(h) }
+            allPages.forEach { it.fitScene(h) }
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
         }
 
@@ -516,7 +715,13 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
 
         fun layoutPages() {
             val w = width.toFloat()
-            pages.forEachIndexed { i, p ->
+            allPages.forEach { p ->
+                val i = pages.indexOf(p)
+                if (i < 0) { // 没走的那条路
+                    p.visibility = View.INVISIBLE
+                    p.onScroll(9f, false)
+                    return@forEach
+                }
                 val d = i - pos
                 val near = abs(d) < 1f
                 p.visibility = if (near) View.VISIBLE else View.INVISIBLE
@@ -527,7 +732,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         }
 
         fun settle(target: Int, velocity: Float? = null) {
-            val to = target.coerceIn(0, LAST)
+            val to = target.coerceIn(0, last).let { if (it > current && blocked(current)) current else it }
             anim?.cancel()
             select(to)
             val from = pos
@@ -621,7 +826,8 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         private fun drag(x: Float) {
             var p = dragPos - (x - dragX) / width.coerceAtLeast(1)
             // 两头拉过了：越拉越费劲
-            if (p < 0f) p = -band(-p) else if (p > LAST) p = LAST + band(p - LAST)
+            val max = if (blocked(dragPage)) dragPage else last // 选择页还没选：往后拉不动
+            if (p < 0f) p = -band(-p) else if (p > max) p = max + band(p - max)
             pos = p
             layoutPages()
         }
@@ -638,7 +844,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
                 v < -fling -> floor(pos).toInt() + 1
                 v > fling -> ceil(pos).toInt() - 1
                 else -> pos.roundToInt()
-            }.coerceIn(dragPage - 1, dragPage + 1)
+            }.coerceIn(dragPage - 1, if (blocked(dragPage)) dragPage else dragPage + 1)
             settle(target, if (abs(v) > fling) v else null)
         }
     }
@@ -747,6 +953,15 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         /** 放随状态换的卡片 */
         fun holder(top: Float = 18f): FrameLayout = add(FrameLayout(context), top) as FrameLayout
 
+        /** 页底一行能点的小字：「扫不了码？**改用系统蓝牙配对 ›**」 */
+        fun link(s: String, onClick: () -> Unit) {
+            add(overlays.text("", 13f, 650, palette.sub).apply {
+                text = rich(s)
+                setPadding(0, dp(6f), 0, dp(6f))
+                setOnClickListener { onClick() }
+            }, 8f, wrap = true)
+        }
+
         fun extra(v: View, top: Float = 16f) {
             add(v, top)
         }
@@ -769,12 +984,13 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         private val gap = dpf(6f)
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            setMeasuredDimension(ceil(dot * (PAGES - 1) + wide + gap * (PAGES - 1)).toInt(), ceil(dot).toInt())
+            val n = pages.size.coerceAtLeast(1)
+            setMeasuredDimension(ceil(dot * (n - 1) + wide + gap * (n - 1)).toInt(), ceil(dot).toInt())
         }
 
         override fun onDraw(canvas: Canvas) {
             var x = 0f
-            for (i in 0 until PAGES) {
+            for (i in 0 until pages.size) {
                 val k = (1f - abs(i - pos)).coerceIn(0f, 1f)
                 val w = dot + (wide - dot) * k
                 paint.color = Ui.blend(Ui.alpha(palette.fg, 0.18f), palette.fg, k)
@@ -800,6 +1016,9 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
                 }
             }
         private var label = ""
+        /** 0～1：灰掉（选择页还没选） */
+        private var dim = 0f
+        private var dimAnim: ValueAnimator? = null
         private var oldLabel: String? = null
         private var swap = 1f
         private var swapAnim: ValueAnimator? = null
@@ -856,6 +1075,25 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             }
         }
 
+        fun dimTo(on: Boolean, animate: Boolean = true) {
+            val to = if (on) 1f else 0f
+            dimAnim?.cancel()
+            if (!animate || !ValueAnimator.areAnimatorsEnabled()) {
+                dim = to
+                invalidate()
+                return
+            }
+            dimAnim = ValueAnimator.ofFloat(dim, to).apply {
+                duration = 260
+                interpolator = Ui.EASE
+                addUpdateListener {
+                    dim = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
         private fun mainLeft() = (height + dpf(10f)) * t
 
         override fun onDraw(canvas: Canvas) {
@@ -884,7 +1122,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             val s = 1f - 0.05f * press[1]
             canvas.save()
             canvas.scale(s, s, (left + w) / 2f, r)
-            fill.color = palette.fg
+            fill.color = Ui.blend(palette.fg, palette.line, dim)
             box.set(left, 0f, w, h)
             canvas.drawRoundRect(box, r, r, fill)
             canvas.clipRect(box)
@@ -892,10 +1130,10 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             val base = r - (words.descent() + words.ascent()) / 2f
             val shift = dpf(12f)
             oldLabel?.let {
-                words.color = Ui.alpha(palette.tile, 1f - swap)
+                words.color = Ui.alpha(Ui.blend(palette.tile, palette.sub, dim), 1f - swap)
                 canvas.drawText(it, cx, base - shift * swap, words)
             }
-            words.color = Ui.alpha(palette.tile, swap)
+            words.color = Ui.alpha(Ui.blend(palette.tile, palette.sub, dim), swap)
             canvas.drawText(label, cx, base + shift * (1f - swap), words)
             canvas.restore()
         }
@@ -956,6 +1194,148 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         }
     }
 
+    /** 选择页上的一种连接方式：图标、名字和一个绿标签、两行说明、右边一个单选圈。选中了是黑框、图标反白 */
+    @SuppressLint("ViewConstructor")
+    private inner class OptionCard(
+        ctx: Context, private val which: Mode, name: String, tag: String, line1: String, line2: String,
+    ) : LinearLayout(ctx) {
+        private val icon = ModeIcon(ctx, which)
+        private val radio = Radio(ctx)
+        var chosen = false
+            set(v) {
+                if (field == v) return
+                field = v
+                paint()
+            }
+
+        init {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+            addView(icon, LayoutParams(dp(42f), dp(42f)))
+            addView(LinearLayout(ctx).apply {
+                orientation = VERTICAL
+                addView(LinearLayout(ctx).apply {
+                    orientation = HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(overlays.text(name, 16f, 900, palette.fg))
+                    addView(overlays.text(tag, 11.5f, 850, limeInk).apply {
+                        background = Ui.round(limeBg, dpf(9f))
+                        setPadding(dp(7f), dp(2f), dp(7f), dp(2f))
+                    }, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(8f) })
+                })
+                addView(overlays.text(line1, 13f, 650, palette.sub).apply { setPadding(0, dp(4f), 0, 0) })
+                addView(overlays.text(line2, 13f, 650, palette.sub).apply { setPadding(0, dp(1f), 0, 0) })
+            }, LayoutParams(0, WRAP_CONTENT, 1f).apply { marginStart = dp(12f) })
+            addView(radio, LayoutParams(dp(22f), dp(22f)).apply { marginStart = dp(8f) })
+            Ui.springy(this, 0.97f)
+            setOnClickListener { choose(which) }
+            paint()
+        }
+
+        private fun paint() {
+            background = if (chosen) Ui.round(palette.tile, dpf(20f), dp(2f), palette.fg)
+            else Ui.round(palette.tile, dpf(20f), Ui.hairline(context).toInt(), palette.line)
+            icon.on = chosen
+            radio.on = chosen
+            contentDescription = if (chosen) "已选" else null
+        }
+    }
+
+    /** 选择页卡片上的图标：圆里一个蓝牙或 Wi-Fi 标志；选中了黑底白标 */
+    @SuppressLint("ViewConstructor")
+    private inner class ModeIcon(ctx: Context, private val which: Mode) : View(ctx) {
+        var on = false
+            set(v) {
+                if (field != v) {
+                    field = v
+                    invalidate()
+                }
+            }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        private val path = Path()
+        private val box = RectF()
+
+        override fun onDraw(canvas: Canvas) {
+            val r = min(width, height) / 2f
+            canvas.save()
+            canvas.translate(width / 2f, height / 2f)
+            fill.color = if (on) palette.fg else palette.bg
+            canvas.drawCircle(0f, 0f, r, fill)
+            val u = r / 15f // 按半径 15 的圆画
+            canvas.scale(u, u)
+            ink.color = if (on) palette.tile else palette.fg
+            fill.color = ink.color
+            ink.strokeWidth = 1.8f
+            if (which == Mode.BT) {
+                path.reset()
+                path.moveTo(-4.2f, -4.2f)
+                path.lineTo(4.2f, 3.8f)
+                path.lineTo(0f, 7.6f)
+                path.lineTo(0f, -7.6f)
+                path.lineTo(4.2f, -3.8f)
+                path.lineTo(-4.2f, 4.2f)
+                canvas.drawPath(path, ink)
+            } else {
+                for (rr in floatArrayOf(3.6f, 7f, 10.4f)) {
+                    box.set(-rr, 5f - rr, rr, 5f + rr)
+                    canvas.drawArc(box, 228f, 84f, false, ink)
+                }
+                canvas.drawCircle(0f, 5f, 1.4f, fill)
+            }
+            canvas.restore()
+        }
+    }
+
+    /** 单选圈：没选是细圈，选了是黑圈里一个点（弹一下） */
+    @SuppressLint("ViewConstructor")
+    private inner class Radio(ctx: Context) : View(ctx) {
+        private var k = 0f
+        private var anim: ValueAnimator? = null
+        var on = false
+            set(v) {
+                if (field == v) return
+                field = v
+                anim?.cancel()
+                if (!isAttachedToWindow || !ValueAnimator.areAnimatorsEnabled()) {
+                    k = if (v) 1f else 0f
+                    invalidate()
+                    return
+                }
+                anim = ValueAnimator.ofFloat(k, if (v) 1f else 0f).apply {
+                    duration = if (v) 420L else 200L
+                    interpolator = if (v) Ui.SOFT_SPRING else Ui.EASE
+                    addUpdateListener {
+                        k = it.animatedValue as Float
+                        invalidate()
+                    }
+                    start()
+                }
+            }
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        override fun onDraw(canvas: Canvas) {
+            val r = min(width, height) / 2f
+            val cx = width / 2f
+            val cy = height / 2f
+            val kk = k.coerceIn(0f, 1f)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dpf(1.6f) + dpf(0.4f) * kk
+            paint.color = Ui.blend(palette.line, palette.fg, kk)
+            canvas.drawCircle(cx, cy, r - paint.strokeWidth / 2f, paint)
+            if (k > 0f) {
+                paint.style = Paint.Style.FILL
+                paint.color = palette.fg
+                canvas.drawCircle(cx, cy, r * 0.45f * k, paint)
+            }
+        }
+    }
+
     /** 黑底白勾的小圆：出现时弹一下，勾一笔画出来 */
     @SuppressLint("ViewConstructor")
     private inner class DoneBadge(ctx: Context) : View(ctx) {
@@ -1000,6 +1380,49 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             measure.getSegment(0f, measure.length * k, part, true)
             stroke.strokeWidth = s * 0.1f
             canvas.drawPath(part, stroke)
+        }
+    }
+
+    /** 正在做的那一步：浅色的圈上一段黑弧一直转 */
+    @SuppressLint("ViewConstructor")
+    private inner class SpinBadge(ctx: Context) : View(ctx) {
+        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val box = RectF()
+        private var spin: ValueAnimator? = null
+        private var angle = 0f
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            spin = ValueAnimator.ofFloat(0f, 360f).apply {
+                duration = 900
+                repeatCount = ValueAnimator.INFINITE
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener {
+                    angle = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            spin?.cancel()
+            spin = null
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val s = width.toFloat()
+            val w = s * 0.09f
+            stroke.strokeWidth = w
+            box.set(w, w, s - w, s - w)
+            stroke.color = palette.line
+            canvas.drawOval(box, stroke)
+            stroke.color = palette.fg
+            canvas.drawArc(box, angle - 90f, 100f, false, stroke)
         }
     }
 
@@ -1816,6 +2239,630 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         }
     }
 
+    /**
+     * 扫码那页（选了局域网才有）：电脑上出二维码，手机上蒜鸟的扫码界面对准、扫描线扫过，认出来打勾，
+     * 手机换成蒜鸟、顶上写「局域网」；中间虚点变实线，Wi-Fi 标志外面一圈绿、下面挂「局域网」
+     */
+    @SuppressLint("ViewConstructor")
+    private inner class LanScene(ctx: Context) : Scene(ctx, 4300f) {
+        private val screenClip = Path()
+
+        private val code = qrModules()
+        private val lime = 0xFF9BE03A.toInt()
+        private val limeBg = if (palette.dark) 0xFF33441A.toInt() else 0xFFDCF7A1.toInt()
+        private val limeInk = if (palette.dark) 0xFFB9EC6A.toInt() else 0xFF3D5C0E.toInt()
+
+        override fun render() {
+            val intro = ease(seg(0f, 560f))
+            val tt = loop(560f, 5600f)
+            val back = 1f - seg(5000f, 5500f, tt) // 一轮末尾回到还没扫的样子
+            val aim = ease(seg(700f, 1200f, tt)) * back // 手机对准了，取景框里出现二维码
+            val found = seg(2500f, 2650f, tt) * back // 认出来了
+            val app = ease(seg(3100f, 3400f, tt)) * back // 手机换成蒜鸟
+            val linked = ease(seg(3500f, 3900f, tt)) * back
+            link(tt, linked, intro)
+
+            // 手机：扫码界面 → 蒜鸟
+            c.save()
+            c.translate(-14f * (1f - intro), 0f)
+            phoneBody(40f, 56f, 102f, 180f, 10f, intro)
+            screenClip.reset()
+            screenClip.addRoundRect(44f, 60f, 98f, 176f, 7f, 7f, Path.Direction.CW)
+            c.save()
+            c.clipPath(screenClip)
+            val scan = intro * (1f - app)
+            if (scan > 0f) {
+                fill.color = Ui.alpha(0xFF262624.toInt(), scan)
+                c.drawRect(44f, 60f, 98f, 176f, fill)
+                textMid("扫码连接电脑", 71f, 70f, 5.4f, 850, Ui.alpha(0xFFFFFFFF.toInt(), scan))
+                // 取景框 54..88 × 96..130
+                if (aim > 0f) {
+                    c.save()
+                    val s = lerp(1.25f, 1f, aim)
+                    c.translate(lerp(8f, 0f, aim), lerp(-6f, 0f, aim))
+                    c.scale(s, s, 71f, 113f)
+                    qr(58f, 100f, 26f, aim * scan, 0xFF262624.toInt())
+                    c.restore()
+                }
+                val corner = if (found >= 0.5f) lime else 0xFFFFFFFF.toInt()
+                line.color = Ui.alpha(corner, scan)
+                line.strokeWidth = 1.5f
+                val L = 7f
+                for ((x, y, dx, dy) in listOf(
+                    floatArrayOf(54f, 96f, 1f, 1f), floatArrayOf(88f, 96f, -1f, 1f),
+                    floatArrayOf(54f, 130f, 1f, -1f), floatArrayOf(88f, 130f, -1f, -1f),
+                )) {
+                    path.reset()
+                    path.moveTo(x, y + dy * L)
+                    path.lineTo(x, y)
+                    path.lineTo(x + dx * L, y)
+                    c.drawPath(path, line)
+                }
+                // 扫描线：对准以后从上往下扫两遍，认出来就停
+                val sweep = seg(1200f, 2500f, tt)
+                if (sweep > 0f && found < 1f) {
+                    val y = lerp(97f, 129f, (sweep * 2f) % 1f)
+                    val a = scan * (1f - found)
+                    for (k in 0 until 6) { // 扫描线上面一小段渐亮的光
+                        fill.color = Ui.alpha(lime, 0.075f * (k + 1) * a)
+                        c.drawRect(56f, y - 9f + 1.5f * k, 86f, y - 7.5f + 1.5f * k, fill)
+                    }
+                    fill.color = Ui.alpha(lime, a)
+                    rr(55f, y - 0.6f, 87f, y + 0.6f, 0.6f, fill)
+                }
+                if (found > 0f) {
+                    val s = pop(seg(2500f, 2850f, tt))
+                    fill.color = Ui.alpha(lime, scan)
+                    c.drawCircle(71f, 113f, 7.5f * s, fill)
+                    check(71f, 113f, 9f, seg(2600f, 2900f, tt), Ui.alpha(0xFF121212.toInt(), scan), 1.6f)
+                }
+                val hint = if (found > 0f) "认出来了" else "对准电脑上的二维码"
+                textMid(hint, 71f, 160f, 4.2f, 650, Ui.alpha(0xFFCFCFCA.toInt(), scan))
+            }
+            if (app > 0f) {
+                val a = app * intro
+                val ink = Ui.alpha(palette.fg, a)
+                text("蒜鸟", 50f, 74f, 6.6f, 900, ink)
+                // 顶上的状态：连上前「正在连接」，连上后绿底「局域网」
+                fill.color = Ui.alpha(if (linked > 0.5f) limeBg else palette.tile, a)
+                rr(70f, 66.5f, 94f, 74.5f, 4f, fill)
+                fill.color = Ui.alpha(if (linked > 0.5f) limeInk else palette.mut, a)
+                c.drawCircle(74f, 70.5f, 1.3f, fill)
+                textMid(if (linked > 0.5f) "局域网" else "连接中", 84f, 70.5f, 4f, 850, Ui.alpha(if (linked > 0.5f) limeInk else palette.sub, a))
+                fill.color = Ui.alpha(palette.tile, a)
+                rr(48f, 82f, 94f, 128f, 5f, fill)
+                textMid("触控板", 71f, 105f, 4.2f, 650, Ui.alpha(palette.mut, a))
+                for (i in 0 until 2) for (j in 0 until 3) {
+                    val l = 48f + j * 16f
+                    val top = 133f + i * 16f
+                    rr(l, top, l + 14f, top + 13f, 3f, fill)
+                }
+            }
+            c.restore()
+            c.restore()
+
+            // 电脑：「扫码连接手机」窗口，二维码淡入；连上后二维码上打勾、写「已绑定」
+            c.save()
+            c.translate(14f * (1f - intro), 0f)
+            laptop(182f, 70f, 282f, 138f, intro, 5f)
+            c.save()
+            c.clipRect(187f, 75f, 277f, 133f)
+            fill.color = Ui.alpha(palette.tile, intro)
+            rr(193f, 80f, 271f, 128f, 3.5f, fill)
+            line.color = Ui.alpha(palette.line, intro)
+            line.strokeWidth = 0.7f
+            rr(193f, 80f, 271f, 128f, 3.5f, line)
+            text("扫码连接手机", 198f, 89f, 5.2f, 900, Ui.alpha(palette.fg, intro))
+            val shown = ease(seg(150f, 600f, tt)) * intro * lerp(0.4f, 1f, back)
+            fill.color = Ui.alpha(0xFFFFFFFF.toInt(), shown)
+            rr(197f, 92.5f, 227.5f, 123f, 1f, fill)
+            qr(198.5f, 94f, 27.5f, shown, 0xFF121212.toInt())
+            fill.color = Ui.alpha(palette.line, intro)
+            rr(232f, 98f, 262f, 101f, 1.5f, fill)
+            rr(232f, 105f, 262f, 108f, 1.5f, fill)
+            rr(232f, 112f, 252f, 115f, 1.5f, fill)
+            val bound = seg(3600f, 3800f, tt) * back * intro
+            if (bound > 0f) {
+                fill.color = Ui.alpha(0xFFFFFFFF.toInt(), 0.82f * bound)
+                c.drawRect(197f, 92.5f, 227.5f, 123f, fill)
+                fill.color = Ui.alpha(lime, bound)
+                c.drawCircle(212.25f, 107.75f, 7.5f * pop(seg(3600f, 3950f, tt)), fill)
+                check(212.25f, 107.75f, 9f, seg(3700f, 4000f, tt), Ui.alpha(0xFF121212.toInt(), bound), 1.6f)
+                text("已绑定", 232f, 123f, 4.6f, 850, Ui.alpha(limeInk, bound))
+            }
+            c.restore()
+            c.restore()
+        }
+
+        private fun qr(x: Float, y: Float, size: Float, a: Float, color: Int) {
+            if (a <= 0f) return
+            c.save()
+            c.translate(x, y)
+            c.scale(size / 25f, size / 25f)
+            fill.color = Ui.alpha(color, a)
+            c.drawPath(code, fill)
+            c.restore()
+        }
+
+        /** 中间：没连上是一串虚点、亮点来回跑，Wi-Fi 标志一圈圈往外扩；连上变实线，外面一圈绿，下面挂「局域网」 */
+        private fun link(tt: Float, linked: Float, a: Float) {
+            if (linked < 1f) {
+                val hx = 106f + 70f * ((tt % 1400f) / 1400f)
+                for (i in 0 until 5) {
+                    for (x in floatArrayOf(110f + 4f * i, 156f + 4f * i)) {
+                        val glow = (1f - abs(x - hx) / 8f).coerceIn(0f, 1f)
+                        fill.color = Ui.alpha(palette.fg, (0.22f + 0.5f * glow) * (1f - linked) * a)
+                        c.drawCircle(x, 112f, 1.1f, fill)
+                    }
+                }
+                ripple(141f, 112f, (tt % 1400f) / 1400f, 15f, 24f, (1f - linked) * a)
+            }
+            if (linked > 0f) {
+                line.color = Ui.alpha(palette.fg, a)
+                line.strokeWidth = 1.6f
+                c.drawLine(110f, 112f, lerp(110f, 124f, linked), 112f, line)
+                c.drawLine(158f, 112f, lerp(158f, 172f, linked), 112f, line)
+                line.color = Ui.alpha(lime, linked * a)
+                line.strokeWidth = 1.5f
+                c.drawCircle(141f, 112f, lerp(15f, 18.5f, linked), line)
+                val w = textWidth("局域网", 5f, 850) + 9f
+                val y = 140f - 3f * (1f - linked)
+                fill.color = Ui.alpha(limeBg, linked * a)
+                rr(141f - w / 2f, y - 5.5f, 141f + w / 2f, y + 5.5f, 5.5f, fill)
+                textMid("局域网", 141f, y, 5f, 850, Ui.alpha(limeInk, linked * a))
+            }
+            val s = pop(seg(150f, 650f)) * (1f + 0.12f * sin(PI.toFloat() * seg(3500f, 3850f, tt)))
+            if (s <= 0f) return
+            c.save()
+            c.translate(141f, 112f)
+            c.scale(s, s)
+            fill.color = Ui.alpha(palette.fg, a)
+            c.drawCircle(0f, 0f, 15f, fill)
+            // Wi-Fi：三道弧 + 一个点
+            line.color = Ui.alpha(palette.tile, a)
+            line.strokeWidth = 1.8f
+            for (r in floatArrayOf(3.6f, 7f, 10.4f)) {
+                box.set(-r, 5f - r, r, 5f + r)
+                c.drawArc(box, 228f, 84f, false, line)
+            }
+            fill.color = Ui.alpha(palette.tile, a)
+            c.drawCircle(0f, 5f, 1.4f, fill)
+            c.restore()
+        }
+    }
+
+    /**
+     * 扫码配对那页（选了蓝牙的主路）：电脑上出二维码，手机扫码界面对准、扫描线扫过；手机弹「蓝牙配对请求」，
+     * 手指点「配对」，电脑上冒出「自动同意」；手机换成蒜鸟、顶上写「蓝牙」，中间虚点变实线、蓝牙标志外一圈绿、
+     * 下面挂「蓝牙」，电脑上的二维码打勾、写「已用蓝牙配对」
+     */
+    @SuppressLint("ViewConstructor")
+    private inner class BtScanScene(ctx: Context) : Scene(ctx, 4500f) {
+        private val screenClip = Path()
+        private val code = qrModules()
+        private val lime = 0xFF9BE03A.toInt()
+
+        override fun render() {
+            val intro = ease(seg(0f, 560f))
+            val tt = loop(560f, 6000f)
+            val back = 1f - seg(5400f, 5900f, tt) // 一轮末尾回到还没扫的样子
+            val aim = ease(seg(600f, 1100f, tt)) * back
+            val found = seg(2100f, 2250f, tt) * back
+            val ask = seg(2500f, 2700f, tt) * (1f - seg(3550f, 3750f, tt)) * back // 系统的配对框
+            val agreed = seg(3350f, 3550f, tt) * back // 电脑上「自动同意」
+            val app = ease(seg(3700f, 4000f, tt)) * back
+            val linked = ease(seg(4000f, 4400f, tt)) * back
+            link(tt, linked, intro)
+
+            // 手机：扫码界面 → 配对框 → 蒜鸟
+            c.save()
+            c.translate(-14f * (1f - intro), 0f)
+            phoneBody(40f, 56f, 102f, 180f, 10f, intro)
+            screenClip.reset()
+            screenClip.addRoundRect(44f, 60f, 98f, 176f, 7f, 7f, Path.Direction.CW)
+            c.save()
+            c.clipPath(screenClip)
+            val scan = intro * (1f - app)
+            if (scan > 0f) {
+                fill.color = Ui.alpha(0xFF262624.toInt(), scan)
+                c.drawRect(44f, 60f, 98f, 176f, fill)
+                textMid("扫码配对", 71f, 70f, 5.4f, 850, Ui.alpha(0xFFFFFFFF.toInt(), scan))
+                if (aim > 0f) {
+                    c.save()
+                    val s = lerp(1.25f, 1f, aim)
+                    c.translate(lerp(8f, 0f, aim), lerp(-6f, 0f, aim))
+                    c.scale(s, s, 71f, 113f)
+                    qr(58f, 100f, 26f, aim * scan, 0xFF262624.toInt())
+                    c.restore()
+                }
+                line.color = Ui.alpha(if (found >= 0.5f) lime else 0xFFFFFFFF.toInt(), scan)
+                line.strokeWidth = 1.5f
+                val L = 7f
+                for ((x, y, dx, dy) in listOf(
+                    floatArrayOf(54f, 96f, 1f, 1f), floatArrayOf(88f, 96f, -1f, 1f),
+                    floatArrayOf(54f, 130f, 1f, -1f), floatArrayOf(88f, 130f, -1f, -1f),
+                )) {
+                    path.reset()
+                    path.moveTo(x, y + dy * L)
+                    path.lineTo(x, y)
+                    path.lineTo(x + dx * L, y)
+                    c.drawPath(path, line)
+                }
+                val sweep = seg(1100f, 2100f, tt)
+                if (sweep > 0f && found < 1f) {
+                    val y = lerp(97f, 129f, (sweep * 2f) % 1f)
+                    val a = scan * (1f - found)
+                    for (k in 0 until 6) {
+                        fill.color = Ui.alpha(lime, 0.075f * (k + 1) * a)
+                        c.drawRect(56f, y - 9f + 1.5f * k, 86f, y - 7.5f + 1.5f * k, fill)
+                    }
+                    fill.color = Ui.alpha(lime, a)
+                    rr(55f, y - 0.6f, 87f, y + 0.6f, 0.6f, fill)
+                }
+                textMid("对准电脑上的二维码", 71f, 160f, 4.2f, 650, Ui.alpha(0xFFCFCFCA.toInt(), scan * (1f - ask)))
+                // 系统弹的「蓝牙配对请求」：从下面浮上来
+                if (ask > 0f) {
+                    val rise = 10f * (1f - ease(seg(2500f, 2800f, tt)))
+                    fill.color = Ui.alpha(palette.tile, ask * scan)
+                    rr(47f, 128f + rise, 95f, 173f + rise, 6f, fill)
+                    textMid("蓝牙配对请求", 71f, 136f + rise, 4.3f, 750, Ui.alpha(palette.sub, ask * scan))
+                    textMid(CODE, 71f, 147f + rise, 7.6f, 900, Ui.alpha(palette.fg, ask * scan))
+                    val bs = 1f - 0.08f * hold(tt, 3250f, 3350f)
+                    c.save()
+                    c.scale(bs, bs, 71f, 162f + rise)
+                    fill.color = Ui.alpha(palette.fg, ask * scan)
+                    rr(54f, 156f + rise, 88f, 168f + rise, 6f, fill)
+                    textMid("配对", 71f, 162f + rise, 5.2f, 850, Ui.alpha(palette.tile, ask * scan))
+                    c.restore()
+                }
+            }
+            if (app > 0f) {
+                val a = app * intro
+                text("蒜鸟", 50f, 74f, 6.6f, 900, Ui.alpha(palette.fg, a))
+                fill.color = Ui.alpha(if (linked > 0.5f) limeBg else palette.tile, a)
+                rr(70f, 66.5f, 94f, 74.5f, 4f, fill)
+                fill.color = Ui.alpha(if (linked > 0.5f) limeInk else palette.mut, a)
+                c.drawCircle(74f, 70.5f, 1.3f, fill)
+                textMid(if (linked > 0.5f) "蓝牙" else "连接中", 84f, 70.5f, 4f, 850, Ui.alpha(if (linked > 0.5f) limeInk else palette.sub, a))
+                fill.color = Ui.alpha(palette.tile, a)
+                rr(48f, 82f, 94f, 128f, 5f, fill)
+                textMid("触控板", 71f, 105f, 4.2f, 650, Ui.alpha(palette.mut, a))
+                for (i in 0 until 2) for (j in 0 until 3) {
+                    val l = 48f + j * 16f
+                    val top = 133f + i * 16f
+                    rr(l, top, l + 14f, top + 13f, 3f, fill)
+                }
+            }
+            c.restore()
+            // 手指点「配对」
+            val fa = seg(2850f, 3050f, tt) * (1f - seg(3450f, 3650f, tt)) * back
+            if (fa > 0f) {
+                val k = ease(seg(2850f, 3150f, tt))
+                finger(lerp(96f, 74f, k), lerp(186f, 165f, k), hold(tt, 3250f, 3350f), fa, 0.75f)
+            }
+            c.restore()
+
+            // 电脑：「扫码连接手机」窗口，二维码淡入；手机点了配对冒出「自动同意」，连上后二维码打勾
+            c.save()
+            c.translate(14f * (1f - intro), 0f)
+            laptop(182f, 70f, 282f, 138f, intro, 5f)
+            c.save()
+            c.clipRect(187f, 75f, 277f, 133f)
+            fill.color = Ui.alpha(palette.tile, intro)
+            rr(193f, 80f, 271f, 128f, 3.5f, fill)
+            line.color = Ui.alpha(palette.line, intro)
+            line.strokeWidth = 0.7f
+            rr(193f, 80f, 271f, 128f, 3.5f, line)
+            text("扫码连接手机", 198f, 89f, 5.2f, 900, Ui.alpha(palette.fg, intro))
+            val shown = ease(seg(150f, 600f, tt)) * intro * lerp(0.4f, 1f, back)
+            fill.color = Ui.alpha(0xFFFFFFFF.toInt(), shown)
+            rr(197f, 92.5f, 227.5f, 123f, 1f, fill)
+            qr(198.5f, 94f, 27.5f, shown, 0xFF121212.toInt())
+            val bound = seg(4100f, 4300f, tt) * back * intro
+            // 二维码右边的几行字，冒出「自动同意」时让位
+            fill.color = Ui.alpha(palette.line, intro)
+            if (agreed <= 0f) {
+                rr(232f, 98f, 262f, 101f, 1.5f, fill)
+                rr(232f, 105f, 262f, 108f, 1.5f, fill)
+                rr(232f, 112f, 252f, 115f, 1.5f, fill)
+            }
+            // 「✓ 自动同意」小标
+            val tag = agreed * (1f - seg(3850f, 4050f, tt)) * intro // 「已用蓝牙配对」出来前就收起
+            if (tag > 0f) {
+                val s = pop(seg(3350f, 3650f, tt))
+                c.save()
+                c.scale(s, s, 248f, 108f)
+                fill.color = Ui.alpha(limeBg, tag)
+                rr(232f, 102f, 266f, 114f, 6f, fill)
+                check(238.5f, 108f, 6f, seg(3400f, 3650f, tt), Ui.alpha(limeInk, tag), 1.2f)
+                text("自动同意", 242.5f, 110f, 4.4f, 850, Ui.alpha(limeInk, tag))
+                c.restore()
+            }
+            if (bound > 0f) {
+                fill.color = Ui.alpha(0xFFFFFFFF.toInt(), 0.82f * bound)
+                c.drawRect(197f, 92.5f, 227.5f, 123f, fill)
+                fill.color = Ui.alpha(lime, bound)
+                c.drawCircle(212.25f, 107.75f, 7.5f * pop(seg(4100f, 4450f, tt)), fill)
+                check(212.25f, 107.75f, 9f, seg(4200f, 4500f, tt), Ui.alpha(0xFF121212.toInt(), bound), 1.6f)
+                text("已用蓝牙", 232f, 105f, 4.6f, 850, Ui.alpha(limeInk, bound))
+                text("配对", 232f, 112f, 4.6f, 850, Ui.alpha(limeInk, bound))
+            }
+            c.restore()
+            c.restore()
+        }
+
+        private fun qr(x: Float, y: Float, size: Float, a: Float, color: Int) {
+            if (a <= 0f) return
+            c.save()
+            c.translate(x, y)
+            c.scale(size / 25f, size / 25f)
+            fill.color = Ui.alpha(color, a)
+            c.drawPath(code, fill)
+            c.restore()
+        }
+
+        /** 中间：没连上是一串虚点、亮点来回跑，蓝牙标志一圈圈往外扩；连上变实线，外面一圈绿，下面挂「蓝牙」 */
+        private fun link(tt: Float, linked: Float, a: Float) {
+            if (linked < 1f) {
+                val hx = 106f + 70f * ((tt % 1400f) / 1400f)
+                for (i in 0 until 5) {
+                    for (x in floatArrayOf(110f + 4f * i, 156f + 4f * i)) {
+                        val glow = (1f - abs(x - hx) / 8f).coerceIn(0f, 1f)
+                        fill.color = Ui.alpha(palette.fg, (0.22f + 0.5f * glow) * (1f - linked) * a)
+                        c.drawCircle(x, 112f, 1.1f, fill)
+                    }
+                }
+                ripple(141f, 112f, (tt % 1400f) / 1400f, 15f, 24f, (1f - linked) * a)
+            }
+            if (linked > 0f) {
+                line.color = Ui.alpha(palette.fg, a)
+                line.strokeWidth = 1.6f
+                c.drawLine(110f, 112f, lerp(110f, 124f, linked), 112f, line)
+                c.drawLine(158f, 112f, lerp(158f, 172f, linked), 112f, line)
+                line.color = Ui.alpha(lime, linked * a)
+                line.strokeWidth = 1.5f
+                c.drawCircle(141f, 112f, lerp(15f, 18.5f, linked), line)
+                val w = textWidth("蓝牙", 5f, 850) + 9f
+                val y = 140f - 3f * (1f - linked)
+                fill.color = Ui.alpha(limeBg, linked * a)
+                rr(141f - w / 2f, y - 5.5f, 141f + w / 2f, y + 5.5f, 5.5f, fill)
+                textMid("蓝牙", 141f, y, 5f, 850, Ui.alpha(limeInk, linked * a))
+            }
+            val s = pop(seg(150f, 650f)) * (1f + 0.12f * sin(PI.toFloat() * seg(4000f, 4350f, tt)))
+            if (s <= 0f) return
+            c.save()
+            c.translate(141f, 112f)
+            c.scale(s, s)
+            fill.color = Ui.alpha(palette.fg, a)
+            c.drawCircle(0f, 0f, 15f, fill)
+            line.color = Ui.alpha(palette.tile, a)
+            line.strokeWidth = 1.8f
+            path.reset()
+            path.moveTo(-4.2f, -4.2f)
+            path.lineTo(4.2f, 3.8f)
+            path.lineTo(0f, 7.6f)
+            path.lineTo(0f, -7.6f)
+            path.lineTo(4.2f, -3.8f)
+            path.lineTo(-4.2f, 4.2f)
+            c.drawPath(path, line)
+            c.restore()
+        }
+    }
+
+    /**
+     * 选连接方式那页：左边手机（相册）、右边电脑（「下载 › 蒜鸟」两个空位），中间两条路：上面蓝牙、下面局域网，
+     * 各送一张照片过去，局域网的先到；接着网断了（Wi-Fi 标志变灰、划掉），局域网那张送不到，蓝牙那张照样送到。
+     * 选好一种以后：另一条淡下去，选中的那条变实线、标志外面一圈绿，一直在送照片
+     */
+    @SuppressLint("ViewConstructor")
+    private inner class ChoiceScene(ctx: Context) : Scene(ctx, 2400f) {
+        private val lime = 0xFF9BE03A.toInt()
+        private val sky = if (palette.dark) 0xFF2D4157.toInt() else 0xFFCFE6F7.toInt()
+        private val hill = if (palette.dark) 0xFF6C9BC7.toInt() else 0xFF5B95C9.toInt()
+        private val btY = 94f
+        private val lanY = 132f
+
+        /** 画面里现在按哪种画（选了以后从选的那一刻起重新开始送） */
+        private var drawn: Mode? = null
+        private var chosenAt = -10000f
+        private var brokeAtChoice = 0f
+        private var lastBroke = 0f
+
+        override fun restart() {
+            drawn = mode
+            chosenAt = -10000f
+            brokeAtChoice = 0f
+            lastBroke = 0f
+        }
+
+        override fun render() {
+            if (mode != drawn) {
+                drawn = mode
+                chosenAt = t
+                brokeAtChoice = lastBroke
+            }
+            val intro = ease(seg(0f, 560f))
+            var btTok = -1f // 照片走到哪了（0～1），-1 不画
+            var lanTok = -1f
+            var lanLost = 0f // 局域网那张送不到，淡掉的程度
+            var slots = 0 // 电脑上放了几张
+            var broke: Float
+            var btA = 1f
+            var lanA = 1f
+            var btOn = 0f
+            var lanOn = 0f
+            val m = mode
+            if (m == null) {
+                val tt = loop(600f, 7000f)
+                // 前半：两张一起出发，局域网 0.8 秒到，蓝牙 2 秒到
+                if (tt in 300f..3300f) {
+                    lanTok = seg(300f, 1100f, tt)
+                    btTok = seg(300f, 2300f, tt)
+                    slots = (if (tt >= 1100f) 1 else 0) + (if (tt >= 2300f) 1 else 0)
+                }
+                // 后半：网断了，局域网那张走到一半没了，蓝牙照样到
+                broke = ease(seg(3500f, 3800f, tt)) * (1f - ease(seg(6500f, 6900f, tt)))
+                if (tt in 3900f..6700f) {
+                    lanTok = lerp(0f, 0.42f, ease(seg(3900f, 4500f, tt)))
+                    lanLost = seg(4500f, 4900f, tt)
+                    btTok = seg(3900f, 5900f, tt)
+                    slots = if (tt >= 5900f) 1 else 0
+                }
+                if (slots > 0 && (tt in 3150f..3300f || tt > 6550f)) slots = -slots // 清空前淡掉
+                lastBroke = broke
+            } else {
+                val k = ease(seg(chosenAt, chosenAt + 420f))
+                broke = brokeAtChoice * (1f - k)
+                val lan = m == Mode.LAN
+                btA = if (lan) lerp(1f, 0.3f, k) else 1f
+                lanA = if (lan) 1f else lerp(1f, 0.3f, k)
+                btOn = if (lan) 0f else k
+                lanOn = if (lan) k else 0f
+                val start = maxOf(chosenAt, 600f)
+                val period = if (lan) 1500f else 2600f
+                val travel = if (lan) 800f else 2000f
+                val since = t - start
+                if (since >= 0f) {
+                    val tt = since % period
+                    val tok = if (tt < travel) seg(0f, travel, tt) else -1f
+                    if (lan) lanTok = tok else btTok = tok
+                    val done = floor(since / period).toInt() + (if (tt >= travel) 1 else 0)
+                    slots = min(done, 2)
+                }
+            }
+
+            // 两条路（照片在标志后面走）
+            lane(btY, intro * btA, btOn, 0f, false)
+            lane(lanY, intro * lanA, lanOn, broke, true)
+            if (btTok in 0f..1f) photo(lerp(108f, 176f, btTok), btY, 13f, intro * btA * seg(0f, 0.08f, btTok) * (1f - seg(0.94f, 1f, btTok)))
+            if (lanTok in 0f..1f) {
+                val a = intro * lanA * seg(0f, 0.08f, lanTok) * (1f - seg(0.94f, 1f, lanTok)) * (1f - lanLost)
+                photo(lerp(108f, 176f, lanTok), lanY, 13f, a)
+            }
+            badge(btY, intro * btA, btOn, 0f, false)
+            badge(lanY, intro * lanA, lanOn, broke, true)
+            pill("蓝牙", btY - 21f, intro * btA, btOn)
+            pill("局域网", lanY + 21f, intro * lanA, lanOn)
+
+            // 手机：蒜鸟 + 相册
+            c.save()
+            c.translate(-14f * (1f - intro), 0f)
+            phoneBody(40f, 56f, 102f, 180f, 10f, intro)
+            text("相册", 50f, 74f, 6.6f, 900, Ui.alpha(palette.fg, intro))
+            for (i in 0 until 4) for (j in 0 until 3) {
+                photo(55f + j * 16f, 92f + i * 18f, 13f, intro * (if (i == 0 && j == 0) 1f else 0.55f))
+            }
+            line.color = Ui.alpha(lime, intro)
+            line.strokeWidth = 1.4f
+            rr(47.5f, 85.5f, 62.5f, 98.5f, 3f, line) // 正在发的那张
+            c.restore()
+
+            // 电脑：「下载 › 蒜鸟」，两个空位，送到的照片弹进去
+            c.save()
+            c.translate(14f * (1f - intro), 0f)
+            laptop(182f, 70f, 282f, 138f, intro, 5f)
+            text("下载 › 蒜鸟", 193f, 84f, 5f, 850, Ui.alpha(palette.fg, intro))
+            val fade = if (slots < 0) 0.4f else 1f
+            for (i in 0 until 2) {
+                val l = 193f + i * 40f
+                line.color = Ui.alpha(palette.line, intro)
+                line.strokeWidth = 0.9f
+                rr(l, 91f, l + 36f, 127f, 3.5f, line)
+                if (i < abs(slots)) photo(l + 18f, 109f, 26f, intro * fade)
+            }
+            c.restore()
+        }
+
+        /** 一条路：没选是虚点；选中了变实线 */
+        private fun lane(y: Float, a: Float, on: Float, broke: Float, wifi: Boolean) {
+            if (a <= 0f) return
+            val dim = if (wifi) 1f - 0.6f * broke else 1f
+            for (i in 0 until 17) {
+                fill.color = Ui.alpha(palette.fg, 0.28f * (1f - on) * a * dim)
+                c.drawCircle(110f + i * 4f, y, 1.1f, fill)
+            }
+            if (on > 0f) {
+                line.color = Ui.alpha(palette.fg, on * a)
+                line.strokeWidth = 1.6f
+                c.drawLine(110f, y, 174f, y, line)
+            }
+        }
+
+        /** 路中间的标志：黑圆里蓝牙或 Wi-Fi；网断了变灰、划一道；选中了外面一圈绿 */
+        private fun badge(y: Float, a: Float, on: Float, broke: Float, wifi: Boolean) {
+            val s = pop(seg(150f, 650f)) * (1f + 0.1f * sin(PI.toFloat() * seg(chosenAt, chosenAt + 380f)) * on)
+            if (s <= 0f || a <= 0f) return
+            c.save()
+            c.translate(141f, y)
+            c.scale(s, s)
+            if (on > 0f) {
+                line.color = Ui.alpha(lime, on * a)
+                line.strokeWidth = 1.6f
+                c.drawCircle(0f, 0f, lerp(11f, 14f, on), line)
+            }
+            fill.color = Ui.alpha(Ui.blend(palette.fg, palette.mut, broke), a)
+            c.drawCircle(0f, 0f, 11f, fill)
+            c.scale(0.72f, 0.72f)
+            line.color = Ui.alpha(palette.tile, a)
+            line.strokeWidth = 1.9f
+            if (!wifi) {
+                path.reset()
+                path.moveTo(-4.2f, -4.2f)
+                path.lineTo(4.2f, 3.8f)
+                path.lineTo(0f, 7.6f)
+                path.lineTo(0f, -7.6f)
+                path.lineTo(4.2f, -3.8f)
+                path.lineTo(-4.2f, 4.2f)
+                c.drawPath(path, line)
+            } else {
+                for (r in floatArrayOf(3.6f, 7f, 10.4f)) {
+                    box.set(-r, 5f - r, r, 5f + r)
+                    c.drawArc(box, 228f, 84f, false, line)
+                }
+                fill.color = Ui.alpha(palette.tile, a)
+                c.drawCircle(0f, 5f, 1.4f, fill)
+                if (broke > 0f) { // 划掉：一道斜线从左上画到右下
+                    line.strokeWidth = 2.2f
+                    c.drawLine(-9f, -9f, lerp(-9f, 9f, broke), lerp(-9f, 9f, broke), line)
+                }
+            }
+            c.restore()
+        }
+
+        /** 路上（下）挂的名字：选中了绿底 */
+        private fun pill(s: String, y: Float, a: Float, on: Float) {
+            if (a <= 0f) return
+            val w = textWidth(s, 5f, 850) + 9f
+            fill.color = Ui.alpha(Ui.blend(palette.tile, limeBg, on), a)
+            rr(141f - w / 2f, y - 5.5f, 141f + w / 2f, y + 5.5f, 5.5f, fill)
+            textMid(s, 141f, y, 5f, 850, Ui.alpha(Ui.blend(palette.sub, limeInk, on), a))
+        }
+
+        /** 一张照片：浅蓝天、一座山、一个太阳 */
+        private fun photo(cx: Float, cy: Float, w: Float, a: Float) {
+            if (a <= 0f) return
+            val h = w * 0.8f
+            val l = cx - w / 2f
+            val top = cy - h / 2f
+            fill.color = Ui.alpha(sky, a)
+            rr(l, top, l + w, top + h, w * 0.14f, fill)
+            fill.color = Ui.alpha(0xFFFFC94A.toInt(), a)
+            c.drawCircle(l + w * 0.72f, top + h * 0.3f, w * 0.09f, fill)
+            fill.color = Ui.alpha(hill, a)
+            path.reset()
+            path.moveTo(l + w * 0.06f, top + h * 0.86f)
+            path.lineTo(l + w * 0.36f, top + h * 0.42f)
+            path.lineTo(l + w * 0.56f, top + h * 0.66f)
+            path.lineTo(l + w * 0.7f, top + h * 0.52f)
+            path.lineTo(l + w * 0.94f, top + h * 0.86f)
+            path.close()
+            c.drawPath(path, fill)
+            line.color = Ui.alpha(palette.fg, a)
+            line.strokeWidth = maxOf(0.7f, w * 0.06f)
+            rr(l, top, l + w, top + h, w * 0.14f, line)
+        }
+    }
+
     /** 第 3 步：「选择电脑」列表里点自己的电脑，打勾，下面显示正在连接 → 已连接 */
     @SuppressLint("ViewConstructor")
     private inner class PickScene(ctx: Context) : Scene(ctx, 3760f) {
@@ -2508,9 +3555,6 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         /** 和 MainActivity 里的同名：看过触控板那页就不再弹手势说明 */
         const val KEY_GUIDE_SEEN = "gesture_guide_seen"
 
-        const val PAD = 4
-        const val LAST = 8
-        const val PAGES = LAST + 1
 
         /** 触控板每个手势演示多久 */
         const val G = 2700f
@@ -2539,4 +3583,22 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         /** 彩纸用 logo 里的颜色 */
         val CONFETTI = intArrayOf(0xFF9BE03A.toInt(), 0xFFC47BD6.toInt(), 0xFFFF8AA2.toInt(), 0xFFFFB84E.toInt(), 0xFF5DB4F0.toInt())
     }
+}
+
+/** 画里的二维码：25×25 格，三个定位角 + 固定的随机点，存成 Path（1 格 = 1 单位） */
+private fun qrModules() = Path().apply {
+    val n = 25
+    val rnd = Random(7)
+    fun finder(x: Int, y: Int) {
+        addRect(x.toFloat(), y.toFloat(), x + 7f, y + 7f, Path.Direction.CW)
+        addRect(x + 1f, y + 1f, x + 6f, y + 6f, Path.Direction.CCW)
+        addRect(x + 2f, y + 2f, x + 5f, y + 5f, Path.Direction.CW)
+    }
+    for (i in 0 until n) for (j in 0 until n) {
+        val inFinder = (i < 8 && j < 8) || (i > n - 9 && j < 8) || (i < 8 && j > n - 9)
+        if (!inFinder && rnd.nextFloat() < 0.47f) addRect(i.toFloat(), j.toFloat(), i + 1.04f, j + 1.04f, Path.Direction.CW)
+    }
+    finder(0, 0)
+    finder(n - 7, 0)
+    finder(0, n - 7)
 }

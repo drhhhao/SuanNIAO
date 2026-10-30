@@ -34,7 +34,8 @@ struct Lan {
     addrs: Mutex<Vec<String>>,
     /// 现在的配对码和过期时刻（Unix 秒）
     pair: Mutex<Option<(String, u64)>>,
-    just_paired: Mutex<(String, u64)>,
+    /// 刚扫码绑定上的手机名、时刻、走的哪种连接（"lan" / "bt"）
+    just_paired: Mutex<(String, u64, &'static str)>,
 }
 
 static LAN: OnceLock<Lan> = OnceLock::new();
@@ -59,7 +60,7 @@ pub fn start() {
                 port: Mutex::new(0),
                 addrs: Mutex::new(local_addrs()),
                 pair: Mutex::new(None),
-                just_paired: Mutex::new((String::new(), 0)),
+                just_paired: Mutex::new((String::new(), 0, "")),
             })
         })();
         let lan = match loaded {
@@ -113,7 +114,7 @@ fn listen(lan: &'static Lan) {
                     if phone.newly_paired {
                         log!("🔗 扫码绑定了手机：{}（{}）", phone.name, phone.model);
                         *lan.pair.lock().unwrap() = None;
-                        *lan.just_paired.lock().unwrap() = (phone.name.clone(), config::now_secs());
+                        *lan.just_paired.lock().unwrap() = (phone.name.clone(), config::now_secs(), "lan");
                     }
                     link::run_lan(conn, phone.id);
                 }
@@ -158,6 +159,9 @@ fn watch(lan: &'static Lan) {
                 }
             }
         }
+        if tick % 10 == 0 {
+            crate::btpair::sweep();
+        }
         if tick % 20 == 0 {
             let fresh = local_addrs();
             let changed = *lan.addrs.lock().unwrap() != fresh;
@@ -178,8 +182,11 @@ fn apply(lan: &'static Lan, command: &config::LanCommand) {
         if fresh {
             new_code(lan);
         }
-    } else if lan.pair.lock().unwrap().take().is_some() {
-        lan.pairings.cancel_pair_code();
+    } else {
+        crate::btpair::close();
+        if lan.pair.lock().unwrap().take().is_some() {
+            lan.pairings.cancel_pair_code();
+        }
     }
     remove_phones(lan, &command.remove);
     refresh_status();
@@ -202,6 +209,8 @@ fn remove_phones(lan: &Lan, ids: &[String]) {
 
 fn new_code(lan: &Lan) {
     let code = lan.pairings.new_pair_code();
+    // 蓝牙扫码配对用同一个码当口令（二维码里的 bc）
+    crate::btpair::open(&code);
     *lan.pair.lock().unwrap() = Some((code, config::now_secs() + PAIR_SECS));
     refresh_status();
 }
@@ -228,6 +237,7 @@ pub fn refresh_status() {
     let listening = lan.listening.load(Ordering::SeqCst);
     let port = *lan.port.lock().unwrap();
     let addrs = lan.addrs.lock().unwrap().clone();
+    let bt_addr = crate::btpair::qr_addr();
     state::update_status(|s| {
         s.lan.listening = listening;
         s.lan.port = port;
@@ -238,8 +248,17 @@ pub fn refresh_status() {
         s.lan.pair_expires = expires;
         s.lan.just_paired = just.0;
         s.lan.just_paired_at = just.1;
+        s.lan.just_paired_via = just.2.to_string();
+        s.lan.bt_addr = bt_addr;
         s.lan.phones = phones;
     });
+}
+
+/// 手机扫码用蓝牙配对上了（btpair 核对过口令）：主界面关掉二维码、提示一声
+pub fn bt_paired(name: &str) {
+    let Some(lan) = LAN.get() else { return };
+    *lan.just_paired.lock().unwrap() = (name.to_string(), config::now_secs(), "bt");
+    refresh_status();
 }
 
 /// 这部手机还绑定着（解除了、重新扫码换了编号就是 false）

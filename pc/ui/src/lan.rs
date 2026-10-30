@@ -24,14 +24,16 @@ pub struct LanUi {
 }
 
 /// 二维码里的内容：手机扫到以后认这个格式
-/// `suanniao://pair?v=1&pc=电脑编号&n=电脑名&a=地址1,地址2&p=端口&fp=证书指纹&c=配对码`
+/// `suanniao://pair?v=1&pc=电脑编号&n=电脑名&a=地址1,地址2&p=端口&fp=证书指纹&c=配对码&bt=蓝牙地址`
+/// 手机按扫码时选的连接方式用：局域网连 a、p，蓝牙对 bt 发起配对（c 兼当口令）。
+/// 没连网时 a 是空的、只能蓝牙配对；电脑没有蓝牙时没有 bt
 fn payload(status: &Status) -> Option<String> {
     let lan = &status.lan;
-    if lan.pair_code.is_empty() || lan.addrs.is_empty() || lan.port == 0 || lan.fingerprint.is_empty() {
+    if lan.pair_code.is_empty() || lan.port == 0 || lan.fingerprint.is_empty() || (lan.addrs.is_empty() && lan.bt_addr.is_empty()) {
         return None;
     }
     let host = std::env::var("COMPUTERNAME").unwrap_or_default();
-    Some(format!(
+    let mut text = format!(
         "suanniao://pair?v=1&pc={}&n={}&a={}&p={}&fp={}&c={}",
         encode(&lan.pc_id),
         encode(host.trim()),
@@ -39,14 +41,18 @@ fn payload(status: &Status) -> Option<String> {
         lan.port,
         encode(&lan.fingerprint),
         encode(&lan.pair_code)
-    ))
+    );
+    if !lan.bt_addr.is_empty() {
+        text.push_str(&format!("&bt={}", encode(&lan.bt_addr)));
+    }
+    Some(text)
 }
 
 /// 网址里的百分号编码（字母数字和 -._~ 原样，其余按 UTF-8 字节编码）
 fn encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~,".contains(&b) {
+        if b.is_ascii_alphanumeric() || b"-._~,:".contains(&b) {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -137,6 +143,8 @@ impl LanUi {
         }
         let links: Vec<&str> = status.links.iter().map(|k| if k == "lan" { "局域网" } else { "蓝牙" }).collect();
         ui.set_link_kind(if status.connected && running { links.join(" + ").into() } else { "".into() });
+        ui.set_lan_online(status.connected && running && status.links.iter().any(|k| k == "lan"));
+        ui.set_bt_online(status.connected && running && status.links.iter().any(|k| k == "bt"));
         ui.set_lan_error(if running { lan.error.as_str().into() } else { "".into() });
 
         let phones: Vec<LanPhoneRow> = lan
@@ -149,7 +157,7 @@ impl LanUi {
                 detail: if p.online && running {
                     format!("{} · 正用局域网连着", p.model).into()
                 } else {
-                    format!("{} · 上次连接 {}", p.model, ago(p.last_seen.max(p.paired_at))).into()
+                    format!("{} · 局域网 · 上次连接 {}", p.model, ago(p.last_seen.max(p.paired_at))).into()
                 },
                 online: p.online,
             })
@@ -168,7 +176,11 @@ impl LanUi {
         }
         if !lan.just_paired.is_empty() && lan.just_paired_at >= open_at {
             self.close(ui);
-            return Some(format!("已绑定「{}」，以后在同一个网络里会自动连上", lan.just_paired));
+            return Some(if lan.just_paired_via == "bt" {
+                format!("已用蓝牙配对「{}」，以后打开蒜鸟就会自动连上", lan.just_paired)
+            } else {
+                format!("已绑定「{}」，以后在同一个网络里会自动连上", lan.just_paired)
+            });
         }
         // 后台刚启动、没收到这次的指令（或者没处理）：过 3 秒再说一次；开着就每 30 秒重写一次，后台知道界面还开着
         let now = config::now_secs();
@@ -188,13 +200,26 @@ impl LanUi {
                     }
                     self.payload = text;
                 }
-                ui.set_lan_addr_text(format!("这台电脑：{} · 端口 {}", lan.addrs.join("、"), lan.port).into());
-                let left = lan.pair_expires.saturating_sub(config::now_secs());
+                let bt = !lan.bt_addr.is_empty();
+                ui.set_lan_addr_text(
+                    match (bt, lan.addrs.is_empty()) {
+                        (true, true) => "这台电脑没连网：只能用蓝牙配对".to_string(),
+                        (true, false) => format!("蓝牙 · 局域网 {} · 端口 {}", lan.addrs.join("、"), lan.port),
+                        _ => format!("局域网 {} · 端口 {}", lan.addrs.join("、"), lan.port),
+                    }
+                    .into(),
+                );
+                let left = lan.pair_expires.saturating_sub(config::now_secs()).div_ceil(60).max(1);
                 ui.set_lan_qr_note(
-                    format!(
-                        "手机要和电脑连着同一个网络。二维码只能用一次，{} 分钟内有效（开着会自动换新的）。连不上的话，看看电脑的防火墙有没有拦住蒜鸟，或者 Wi-Fi 是不是开了「设备隔离」（访客网络常这样）。",
-                        left.div_ceil(60).max(1)
-                    )
+                    if bt {
+                        format!(
+                            "蓝牙：手机扫完会弹「配对」，点一下就好，电脑这边自动同意。局域网：手机要和电脑连着同一个网络。二维码 {left} 分钟内有效（开着会自动换新的）。"
+                        )
+                    } else {
+                        format!(
+                            "手机要和电脑连着同一个网络。二维码只能用一次，{left} 分钟内有效（开着会自动换新的）。连不上的话，看看电脑的防火墙有没有拦住蒜鸟，或者 Wi-Fi 是不是开了「设备隔离」（访客网络常这样）。"
+                        )
+                    }
                     .into(),
                 );
             }

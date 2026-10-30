@@ -6,11 +6,14 @@
 //!              button（按键 id + 按法；连发、重复长按时带 seq、ts、held）、hold（直通的按键按下 / 松开）、text（语音文字）、
 //!              state（亮屏/息屏）、layout（手机上调好的布局）、battery（电量 level 0～100、charging，连上时和变化时发）、
 //!              configAck（套用完第 rev 次推送的配置）、setEnabled（手机上暂停 / 恢复按键）、
-//!              clip（手机剪贴板里的文字 s，回到蒜鸟时剪贴板变了才发，见 clipsync）
+//!              clip（手机剪贴板里的文字 s，回到蒜鸟时剪贴板变了才发，见 clipsync）、
+//!              fileStart / filePart / fileEnd / fileCancel（手机发来的文件，见 filerecv）、
+//!              btpair（扫码蓝牙配对的口令 c；连上时还没发的话放在 hello 的 btc 里，见 btpair.rs）
 //! 电脑 → 手机：hello（带 pc＝局域网的电脑编号）、pong、config（布局和参数，连上时和配置变化时发，带每次加一的 rev）、
 //!              layoutSaved（布局存好没有）、profile（切换了方案：from、to）、clip（电脑上复制的文字 s）、
 //!              clipImg / clipImgPart / clipImgEnd / clipImgCancel（电脑上复制的图片，分块发，见 clipsync）、
-//!              lan（局域网地址变了：pc、addrs、port、fp，手机更新记着的地址，见 lan.rs）
+//!              lan（局域网地址变了：pc、addrs、port、fp，手机更新记着的地址，见 lan.rs）、
+//!              fileAck / fileDone（收文件的进度和结果，从收到的那条连接回，见 filerecv）
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -91,6 +94,19 @@ impl Conn {
                 let _ = socket.Close();
             }
             Conn::Lan { conn, .. } => conn.shutdown(),
+        }
+    }
+
+    /// 蓝牙：对方的地址原样（「(c0:3c:59:12:34:56)」）；局域网：IP
+    fn peer_raw(&self) -> String {
+        match self {
+            Conn::Bt(socket) => socket
+                .Information()
+                .and_then(|info| info.RemoteHostName())
+                .and_then(|host| host.RawName())
+                .map(|name| name.to_string())
+                .unwrap_or_default(),
+            Conn::Lan { .. } => self.peer(),
         }
     }
 
@@ -272,6 +288,8 @@ struct Session {
     burst: Option<Burst>,
     /// 暂停时按了键：提醒过一次就不再刷日志
     paused_noted: bool,
+    /// 这条连接上正在收的文件（断开时没收完的删掉）
+    files: crate::filerecv::Receiver,
 }
 
 struct Burst {
@@ -379,7 +397,16 @@ impl Session {
 
     /// 一直读到断开，返回断开的原因
     fn serve(conn: &Conn, watch: &Arc<Mutex<Watch>>, link: u64) -> String {
-        let mut session = Session { moves: Vec::new(), stats_since: Instant::now(), burst: None, paused_noted: false };
+        let mut session = Session {
+            moves: Vec::new(),
+            stats_since: Instant::now(),
+            burst: None,
+            paused_noted: false,
+            files: crate::filerecv::Receiver::new(match conn.kind() {
+                Kind::Lan => "局域网，",
+                Kind::Bt => "蓝牙，",
+            }),
+        };
         let mut pending: Vec<u8> = Vec::new();
         let mut reader = match Reader::new(conn) {
             Ok(r) => r,
@@ -399,7 +426,7 @@ impl Session {
                 watch.lock().unwrap().last_rx = now;
                 *LAST_RX.lock().unwrap() = Some(now);
                 if !session.handle(&line[..line.len() - 1], watch, conn, link) {
-                    return "另一部手机正连着，拒绝了这部".into();
+                    return "拒绝了这部手机（另一部手机正连着，或者扫码配对的口令不对）".into();
                 }
             }
             if pending.len() > 1 << 20 {
@@ -408,7 +435,7 @@ impl Session {
         }
     }
 
-    /// 处理一条消息；返回 false = 这条连接该断开了（别的手机）
+    /// 处理一条消息；返回 false = 这条连接该断开了（别的手机、扫码配对的口令不对）
     fn handle(&mut self, line: &[u8], watch: &Arc<Mutex<Watch>>, conn: &Conn, link: u64) -> bool {
         let Ok(msg) = serde_json::from_slice::<Value>(line) else {
             log!("⚠ 看不懂的消息：{}", String::from_utf8_lossy(line));
@@ -440,6 +467,17 @@ impl Session {
                         l.phone = Some(lan_id);
                     }
                 }
+                // 扫码蓝牙配对：带着二维码里的口令（btc）。刚配上却拿不出对的口令，配对已经删了，断开
+                if let Conn::Bt(_) = conn {
+                    match crate::btpair::hello(&conn.peer_raw(), &text("btc")) {
+                        Some(true) => {
+                            log!("🔵 {device} 扫码蓝牙配对成功");
+                            crate::lan::bt_paired(&device);
+                        }
+                        Some(false) => return false,
+                        None => {}
+                    }
+                }
                 log!("🤝 {device}（{}App {app}）", if model.is_empty() { String::new() } else { format!("{model}，") });
                 state::update_status(|s| {
                     s.device = device.clone();
@@ -450,14 +488,37 @@ impl Session {
                     s.ack_at = 0;
                 });
                 tray::set_tooltip(&format!("蒜鸟 · 已连接 · {device}"));
-                reply(conn, &json!({"t": "hello", "host": crate::util::host_name(), "app": env!("CARGO_PKG_VERSION"), "pc": crate::lan::pc_id()}));
+                // files：能收手机发来的文件（旧版电脑端没有，手机就不让发）
+                reply(
+                    conn,
+                    &json!({"t": "hello", "host": crate::util::host_name(), "app": env!("CARGO_PKG_VERSION"), "pc": crate::lan::pc_id(), "files": true}),
+                );
                 push_config_on(Some(conn));
                 if let Some(info) = crate::lan::info() {
                     reply(conn, &info);
                 }
             }
+            // 扫码蓝牙配对：手机本来就用蓝牙连着这台电脑（同一台重新扫码），口令单独发过来
+            "btpair" => {
+                if let Conn::Bt(_) = conn {
+                    match crate::btpair::hello(&conn.peer_raw(), &text("c")) {
+                        Some(true) => {
+                            let device = state::status().device;
+                            log!("🔵 {device} 扫码蓝牙配对成功（本来就连着）");
+                            crate::lan::bt_paired(&device);
+                        }
+                        Some(false) => return false,
+                        None => {}
+                    }
+                }
+            }
             "ping" => {
                 reply(conn, &json!({"t": "pong", "id": msg.get("id"), "ts": msg.get("ts")}));
+            }
+            kind @ ("fileStart" | "filePart" | "fileEnd" | "fileCancel") => {
+                if let Some(answer) = self.files.handle(kind, &msg) {
+                    reply(conn, &answer);
+                }
             }
             "move" => {
                 let ts = msg.get("ts").and_then(Value::as_f64);

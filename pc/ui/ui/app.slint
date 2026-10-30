@@ -69,7 +69,7 @@ export struct KeyOption {
 }
 
 // 导入遥控器映射的预览：一个遥控器键
-// 设置页「局域网连接」里一部扫码绑定过的手机
+// 设置页「扫码连接」里一部扫码绑定过局域网的手机
 export struct LanPhoneRow {
     id: string,
     name: string,
@@ -1778,6 +1778,32 @@ component CheckRow inherits HorizontalLayout {
     }
 }
 
+// 首页「连接手机」里局域网那一项：绑过手机就写绑了谁、在不在线；没绑过提示也可以扫码，旁边给个「显示二维码」
+component LanCheck inherits HorizontalLayout {
+    in property <[LanPhoneRow]> phones;
+    in property <bool> up;
+    callback pair();
+    spacing: 10px;
+    CheckRow {
+        horizontal-stretch: 1;
+        state: root.up ? 1 : -1;
+        title: root.phones.length == 0 ? "局域网（可选）" : "局域网：已绑定 " + root.phones[0].name + (root.phones.length > 1 ? " 等 " + root.phones.length + " 部" : "");
+        note: root.phones.length == 0 ? "也可以用局域网：设置 → 扫码连接 → 显示二维码" : root.up ? "在线，正在连上…" : "不在线：两边连同一个网络、打开蒜鸟就会自动连上";
+    }
+    if root.phones.length == 0: VerticalLayout {
+        alignment: center;
+        GhostButton {
+            small: true;
+            text: "显示二维码";
+            has-icon: true;
+            icon: @image-url("../icons/qr.svg");
+            clicked => {
+                root.pair();
+            }
+        }
+    }
+}
+
 component HomePage inherits Page {
     in property <string> greeting;
     in property <string> date-text;
@@ -1808,6 +1834,8 @@ component HomePage inherits Page {
     in property <int> check-paired: -1;
     in property <string> bluetooth-note;
     in property <string> paired-note;
+    // 扫码绑定过的手机（局域网）
+    in property <[LanPhoneRow]> lan-phones;
     // 第一次用：问一句要不要开机自启
     in property <bool> ask-autostart;
     // 窗口窄：数字条里不写连了多久（手机圆标的浮层里有）
@@ -1819,7 +1847,12 @@ component HomePage inherits Page {
     callback autostart-answer(bool);
     callback recheck();
     callback open-tutorial();
+    // 「显示二维码」：扫码绑定手机
+    callback lan-pair();
     property <bool> trouble: false;
+    // 用局域网的人（绑过手机）：蓝牙那几项没过不算出问题，显示成灰圈
+    property <bool> uses-lan: root.lan-phones.length > 0;
+    property <bool> lan-up: root.core-running && root.uses-lan && (root.lan-phones[0].online || (root.lan-phones.length > 1 && root.lan-phones[1].online));
     property <bool> low: root.battery-level >= 0 && root.battery-level <= 20 && !root.battery-charging;
     VerticalLayout {
         alignment: start;
@@ -1965,7 +1998,7 @@ component HomePage inherits Page {
                 alignment: start;
                 CardHead {
                     title: root.core-running ? "连接手机" : "后台未运行";
-                    icon: @image-url("../icons/bluetooth.svg");
+                    icon: root.uses-lan ? @image-url("../icons/wifi.svg") : @image-url("../icons/bluetooth.svg");
                     VerticalLayout {
                         alignment: center;
                         Chip {
@@ -2007,20 +2040,53 @@ component HomePage inherits Page {
                         text: "后台没在运行，手机连不上。";
                         font-size: 12.5px;
                     }
-                    CheckRow {
-                        state: root.check-bluetooth;
-                        title: root.check-bluetooth == 0 ? "电脑蓝牙没开" : "电脑蓝牙已打开";
-                        note: root.bluetooth-note;
+                    // 用局域网的人：局域网放第一项
+                    if root.uses-lan: LanCheck {
+                        phones: root.lan-phones;
+                        up: root.lan-up;
+                        pair => {
+                            root.lan-pair();
+                        }
                     }
                     CheckRow {
-                        state: root.check-paired;
-                        title: root.check-paired == 0 ? "还没和手机配对" : "已和手机配对";
-                        note: root.paired-note;
+                        state: root.uses-lan && root.check-bluetooth == 0 ? -1 : root.check-bluetooth;
+                        title: root.check-bluetooth == 0 ? "电脑蓝牙没开" : "电脑蓝牙已打开";
+                        note: root.uses-lan && root.check-bluetooth == 0 ? "只用局域网的话可以不管" : root.bluetooth-note;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        CheckRow {
+                            horizontal-stretch: 1;
+                            state: root.uses-lan && root.check-paired == 0 ? -1 : root.check-paired;
+                            title: root.check-paired == 0 ? "还没和手机配对" : "已和手机配对";
+                            note: root.uses-lan && root.check-paired == 0 ? "只用局域网的话可以不管" : root.paired-note;
+                        }
+                        // 没配对：显示二维码，手机蒜鸟扫一下就发起蓝牙配对
+                        if root.check-paired == 0 && !root.uses-lan: VerticalLayout {
+                            alignment: center;
+                            GhostButton {
+                                small: true;
+                                text: "扫码配对";
+                                has-icon: true;
+                                icon: @image-url("../icons/qr.svg");
+                                clicked => {
+                                    root.lan-pair();
+                                }
+                            }
+                        }
                     }
                     CheckRow {
                         state: -1;
                         title: "手机上打开蒜鸟";
-                        note: "第一次要在 App 里选这台电脑";
+                        note: root.uses-lan ? "两边都开着，就会自动连上" : "第一次要扫码配对，或在 App 里选这台电脑";
+                    }
+                    // 还没用局域网：放最后，提示也可以扫码
+                    if !root.uses-lan: LanCheck {
+                        phones: root.lan-phones;
+                        up: false;
+                        pair => {
+                            root.lan-pair();
+                        }
                     }
                     HorizontalLayout {
                         padding-top: 4px;
@@ -2058,10 +2124,13 @@ component HomePage inherits Page {
                         padding-top: 6px;
                         spacing: 4px;
                         Muted {
-                            text: "· 电脑：在「设置 → 蓝牙和其他设备」里打开蓝牙，和手机配对。";
+                            text: "· 电脑：打开蓝牙；没配对的话点「扫码配对」，手机上的蒜鸟扫一下。";
                         }
                         Muted {
                             text: "· 手机：打开蒜鸟，右上角「···」→「选择电脑」。";
+                        }
+                        Muted {
+                            text: "· 局域网：两边连同一个网络；还不行就重新扫码。";
                         }
                         Muted {
                             text: "· 还不行：两边蓝牙关了再开，或退出蒜鸟再打开。";
@@ -3354,7 +3423,8 @@ component DialogCard inherits Rectangle {
     }
 }
 
-// 扫码绑定手机：二维码（一次性配对码，10 分钟有效）、这台电脑的地址、怎么扫
+// 扫码连接手机：二维码（一次性配对码，10 分钟有效）、这台电脑的地址、怎么扫。
+// 同一个码蓝牙配对、局域网绑定都用（手机按扫码时选的连接方式用）
 component LanDialog inherits DialogCard {
     in property <image> qr;
     in property <bool> ready;
@@ -3370,7 +3440,7 @@ component LanDialog inherits DialogCard {
         padding: 24px;
         spacing: 12px;
         Text {
-            text: "扫码绑定手机";
+            text: "扫码连接手机";
             color: Theme.fg;
             font-size: 16px;
             font-weight: 700;
@@ -5186,6 +5256,9 @@ component SettingsPage inherits Page {
     in-out property <bool> enter-after;
     in-out property <int> input-mode;
     in-out property <bool> clip-sync;
+    // 手机发来的文件：存到哪个文件夹、收到后放不放进剪贴板
+    in property <string> receive-folder;
+    in-out property <bool> receive-clip;
     in-out property <int> double-click-ms;
     in-out property <int> long-press-ms;
     in-out property <int> repeat-delay-ms;
@@ -5208,6 +5281,8 @@ component SettingsPage inherits Page {
     // 导入遥控器映射：0 从本机读取 1 选择文件
     callback import-remote(int);
     callback open-logs();
+    callback open-receive-folder();
+    callback pick-receive-folder();
     // 局域网连接：扫码绑定过的手机、开不起来的原因；显示二维码、解除绑定
     in property <[LanPhoneRow]> lan-phones;
     in property <string> lan-error;
@@ -5418,12 +5493,63 @@ component SettingsPage inherits Page {
                     VerticalLayout {
                         alignment: start;
                         CardHead {
-                            title: "局域网连接";
+                            title: "接收文件";
+                            icon: @image-url("../icons/download.svg");
+                        }
+                        SettingRow {
+                            label: "保存到";
+                            note: root.receive-folder;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton {
+                                        small: true;
+                                        text: "打开";
+                                        has-icon: true;
+                                        icon: @image-url("../icons/folder.svg");
+                                        clicked => {
+                                            root.open-receive-folder();
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton {
+                                        small: true;
+                                        text: "更改…";
+                                        clicked => {
+                                            root.pick-receive-folder();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        SettingRow {
+                            label: "收到后放进剪贴板";
+                            note: "图片直接粘进对话框";
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle {
+                                    checked <=> root.receive-clip;
+                                    toggled => {
+                                        root.changed();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Card {
+                    VerticalLayout {
+                        alignment: start;
+                        CardHead {
+                            title: "扫码连接";
                             icon: @image-url("../icons/globe.svg");
                         }
                         SettingRow {
-                            label: "扫码绑定手机";
-                            note: "同一网络下不用蓝牙，延迟更低";
+                            label: "扫码连接手机";
+                            note: "蓝牙配对、局域网绑定都扫这一个码";
                             VerticalLayout {
                                 alignment: center;
                                 PrimaryButton {
@@ -6514,6 +6640,8 @@ component MiniLaptop inherits Rectangle {
 // listening：按住语音键说话时 0 → 1（语音按钮变绿，出现声波）
 component MiniApp inherits Rectangle {
     in property <bool> online: true;
+    // 顶栏右边的字
+    in property <string> status-text: root.online ? "已连接" : "未连接";
     in property <bool> keys: true;
     in property <float> listening;
     in property <float> since;
@@ -6548,7 +6676,7 @@ component MiniApp inherits Rectangle {
     state-text := Text {
         x: root.width - 12px - self.width;
         y: 23px;
-        text: root.online ? "已连接" : "未连接";
+        text: root.status-text;
         color: Theme.phone-mut;
         font-size: 9px;
     }
@@ -7356,6 +7484,995 @@ component PairStage inherits Stage {
         tip-x: Tween.lerp(Tween.lerp(root.scr-x + 180px, root.scr-x + 108px, root.aim), root.scr-x + root.scr-w / 2 - 36px, root.aim2);
         tip-y: Tween.lerp(Tween.lerp(root.scr-y + 118px, root.scr-y + 61px, root.aim), root.scr-y + 97px, root.aim2);
         opacity: Tween.seg(root.t, 800, 1100) * (1 - Tween.seg(root.t, 4100, 4400));
+    }
+}
+
+// 插图里的一张照片（要传的文件）：浅绿底、黑边、小山和太阳，size 是宽
+component TutPhoto inherits Rectangle {
+    in property <length> size: 20px;
+    width: root.size;
+    height: root.size * 0.8;
+    border-radius: root.size * 0.14;
+    background: Theme.lime;
+    border-width: Math.max(1.2px, root.size * 0.07);
+    border-color: #141414;
+    Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        viewbox-width: 100;
+        viewbox-height: 80;
+        commands: "M 14 64 L 40 35.2 L 58 52.8 L 70 43.2 L 86 64 Z";
+        fill: #141414;
+    }
+    Rectangle {
+        x: root.width * 0.72 - self.width / 2;
+        y: root.height * 0.3 - self.height / 2;
+        width: root.size * 0.16;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: #141414;
+    }
+}
+
+// 「选一种连接方式」插图里的一条路（竖着，电脑在上、手机在下）：
+// 没选是一串灰点；选中（on）变成黑实线、圆标外一圈绿、标签变绿；没选的那条（fade）整体变淡；
+// off：网断了，圆标变灰、划一道斜杠。p 是路上那张照片走到哪了（0 手机 → 1 电脑），vis 是它的透明度
+component ChoiceLane inherits Rectangle {
+    in property <length> cx;
+    in property <length> top;
+    in property <length> bottom;
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> label-left;
+    in property <float> on;
+    in property <float> fade;
+    in property <float> off;
+    in property <float> p;
+    in property <float> vis;
+    property <length> cy: (root.top + root.bottom) / 2;
+    property <length> r: 24px;
+    property <color> grey: Theme.dark ? #4a4a50 : #c9c9c4;
+    opacity: 1 - 0.78 * root.fade;
+    for k in 11: Rectangle {
+        property <length> dy: root.top + (root.bottom - root.top) * k / 10;
+        x: root.cx - 2px;
+        y: self.dy - 2px;
+        width: 4px;
+        height: 4px;
+        border-radius: 2px;
+        background: root.off > 0.5 ? Theme.line2 : (Theme.dark ? #5a5a60 : #b9b9b4);
+        opacity: Math.abs(self.dy - root.cy) < root.r * 1.2 ? 0 : 1 - root.on;
+    }
+    // 选中：实线从电脑、手机两头往圆标长
+    Rectangle {
+        x: root.cx - 1.25px;
+        y: root.top;
+        width: 2.5px;
+        height: (root.cy - root.r * 1.05 - root.top) * root.on;
+        border-radius: 1.25px;
+        background: Theme.ink;
+    }
+    Rectangle {
+        x: root.cx - 1.25px;
+        height: (root.bottom - root.cy - root.r * 1.05) * root.on;
+        y: root.bottom - self.height;
+        width: 2.5px;
+        border-radius: 1.25px;
+        background: Theme.ink;
+    }
+    Rectangle {
+        x: root.cx - root.r;
+        y: root.cy - root.r;
+        width: root.r * 2;
+        height: root.r * 2;
+        border-radius: root.r;
+        border-width: 2px;
+        border-color: Theme.lime-dot.mix(root.grey, root.on);
+        background: Theme.win.with-alpha(0.6);
+        opacity: 1 - root.off;
+    }
+    Rectangle {
+        x: root.cx - 17px;
+        y: root.cy - 17px;
+        width: 34px;
+        height: 34px;
+        border-radius: 17px;
+        background: (Theme.dark ? #3a3a3f : #d4d4cf).mix(Theme.ink, root.off);
+        Image {
+            width: 17px;
+            height: 17px;
+            source: root.icon;
+            colorize: Theme.ink-fg;
+        }
+    }
+    Path {
+        x: root.cx - root.r * 0.62;
+        y: root.cy - root.r * 0.62;
+        width: root.r * 1.24;
+        height: root.r * 1.24;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        commands: "M 0 0 L 10 10";
+        stroke: Theme.ink;
+        stroke-width: 2.5px;
+        opacity: root.off;
+    }
+    // 标签：蓝牙挂在左边，局域网挂在右边
+    Rectangle {
+        height: 18px;
+        width: lane-label.preferred-width + 14px;
+        x: root.label-left ? root.cx - root.r * 1.3 - self.width : root.cx + root.r * 1.3;
+        y: root.cy - 9px;
+        border-radius: 9px;
+        background: Theme.lime.mix(Theme.win, root.on);
+        border-width: 1px;
+        border-color: Theme.line2.with-alpha(1 - root.on);
+        lane-label := Text {
+            text: root.label;
+            color: Theme.lime-fg.mix(Theme.mut, root.on);
+            font-size: 10px;
+            font-weight: 700;
+        }
+    }
+    TutPhoto {
+        size: 21px;
+        x: root.cx - self.width / 2;
+        y: root.bottom + (root.top - root.bottom) * root.p - self.height / 2;
+        opacity: root.vis;
+        visible: self.opacity > 0.01;
+    }
+}
+
+// 「选一种连接方式」那页的插图：电脑在上、手机在下，中间两条路（左蓝牙、右局域网）。
+// 还没选：两张照片同时出发，局域网的先到；接着网断了，蓝牙那张照样慢慢送到。
+// 选了一种：没选的那条变淡，选中的变实线，照片在上面一张张送到电脑的「下载 › 蒜鸟」里
+component ChooseStage inherits Stage {
+    // 0 还没选 1 蓝牙 2 局域网
+    in property <int> way;
+    property <bool> on: root.active || root.opacity > 0.01;
+    // 换了选择就从头放
+    property <duration> mark;
+    changed way => {
+        root.mark = animation-tick();
+    }
+    property <float> el: root.on ? Math.min(root.since, (animation-tick() - root.mark) / 1ms) : 0;
+    property <float> t0: Math.mod(root.el, 7400);
+    property <float> t1: Math.mod(root.el, 3400);
+    property <float> t2: Math.mod(root.el, 2400);
+    property <float> back0: 1 - Tween.seg(root.t0, 6900, 7300);
+    property <float> back1: 1 - Tween.seg(root.t1, 3000, 3300);
+    property <float> back2: 1 - Tween.seg(root.t2, 2000, 2300);
+    property <float> bt-on: root.way == 1 ? 1 : 0;
+    property <float> lan-on: root.way == 2 ? 1 : 0;
+    animate bt-on, lan-on { duration: 420ms; easing: ease-out; }
+    // 蓝牙那张：走得慢
+    property <float> bt-p: root.way == 0 ? Tween.seg(root.t0, 600, 5000) : root.way == 1 ? Tween.smooth(Tween.seg(root.t1, 300, 2500)) : 0;
+    property <float> bt-vis: root.way == 0 ? Tween.seg(root.t0, 100, 400) * (1 - Tween.seg(root.t0, 4900, 5050)) : root.way == 1 ? Tween.seg(root.t1, 100, 300) * (1 - Tween.seg(root.t1, 2400, 2550)) : 0;
+    property <float> bt-got: root.way == 0 ? Tween.seg(root.t0, 4950, 5150) * root.back0 : root.way == 1 ? Tween.seg(root.t1, 2450, 2650) * root.back1 : 0;
+    property <float> bt-pop: root.way == 0 ? Tween.pop(Tween.seg(root.t0, 5050, 5350)) * root.back0 : root.way == 1 ? Tween.pop(Tween.seg(root.t1, 2550, 2850)) * root.back1 : 0;
+    // 局域网那张：走得快
+    property <float> lan-p: root.way == 0 ? Tween.decel(Tween.seg(root.t0, 600, 1500)) : root.way == 2 ? Tween.decel(Tween.seg(root.t2, 300, 1100)) : 0;
+    property <float> lan-vis: root.way == 0 ? Tween.seg(root.t0, 100, 400) * (1 - Tween.seg(root.t0, 1450, 1600)) : root.way == 2 ? Tween.seg(root.t2, 100, 300) * (1 - Tween.seg(root.t2, 1050, 1200)) : 0;
+    property <float> lan-got: root.way == 0 ? Tween.seg(root.t0, 1450, 1650) * root.back0 : root.way == 2 ? Tween.seg(root.t2, 1100, 1300) * root.back2 : 0;
+    property <float> lan-pop: root.way == 0 ? Tween.pop(Tween.seg(root.t0, 1550, 1850)) * root.back0 : root.way == 2 ? Tween.pop(Tween.seg(root.t2, 1200, 1500)) * root.back2 : 0;
+    // 网断了（只在还没选时演）
+    property <float> lan-off: root.way == 0 ? Tween.seg(root.t0, 2300, 2600) * (1 - Tween.seg(root.t0, 6600, 6900)) : 0;
+    property <length> oy: (root.height - 576px) / 2;
+    MiniLaptop {
+        x: 68px;
+        y: root.oy + 93px;
+        screen-width: 174px;
+        screen-height: 118px;
+        // 屏幕里面 162 × 106（@children 里的 parent 是整台电脑，所以写死）
+        Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 154px;
+            height: 98px;
+            border-radius: 5px;
+            background: Theme.dark ? Theme.soft : #efefec;
+        }
+        // 「下载 › 蒜鸟」：两个格子，左边收局域网那张，右边收蓝牙那张
+        Rectangle {
+            x: 23px;
+            y: 14px;
+            width: 115px;
+            height: 78px;
+            border-radius: 5px;
+            background: Theme.win;
+            border-width: 1px;
+            border-color: Theme.line2;
+            Text {
+                x: 9px;
+                y: 8px;
+                text: "下载 › 蒜鸟";
+                color: Theme.fg;
+                font-size: 9px;
+                font-weight: 700;
+            }
+            for slot[i] in [root.lan-got, root.bt-got]: Rectangle {
+                x: 9px + i * 55px;
+                y: 28px;
+                width: 41px;
+                height: 39px;
+                Rectangle {
+                    border-radius: 5px;
+                    border-width: 1px;
+                    border-color: Theme.line2;
+                    opacity: 1 - slot;
+                }
+                TutPhoto {
+                    size: 35px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    opacity: slot;
+                    visible: self.opacity > 0.01;
+                }
+                badge := Rectangle {
+                    property <float> pop: i == 0 ? root.lan-pop : root.bt-pop;
+                    width: 16px * self.pop;
+                    height: self.width;
+                    x: parent.width * 0.95 - self.width / 2;
+                    y: parent.height * 0.1 - self.height / 2;
+                    border-radius: self.width / 2;
+                    background: Theme.lime-dot;
+                    visible: self.pop > 0.01;
+                    Image {
+                        width: 10px * Math.min(badge.pop, 1);
+                        height: self.width;
+                        source: @image-url("../icons/check.svg");
+                        colorize: #141414;
+                    }
+                }
+            }
+        }
+    }
+    ChoiceLane {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        cx: 133px;
+        top: root.oy + 233px;
+        bottom: root.oy + 365px;
+        icon: @image-url("../icons/bluetooth.svg");
+        label: "蓝牙";
+        label-left: true;
+        on: root.bt-on;
+        fade: root.lan-on;
+        p: root.bt-p;
+        vis: root.bt-vis;
+    }
+    ChoiceLane {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        cx: 207px;
+        top: root.oy + 233px;
+        bottom: root.oy + 365px;
+        icon: @image-url("../icons/wifi.svg");
+        label: "局域网";
+        label-left: false;
+        on: root.lan-on;
+        fade: root.bt-on;
+        off: root.lan-off;
+        p: root.lan-p;
+        vis: root.lan-vis;
+    }
+    // 手机：屏幕是蒜鸟（简化）。屏幕里面 86 × 165（@children 里的 parent 是整部手机，所以写死）
+    MiniPhone {
+        x: 122px;
+        y: root.oy + 375px;
+        width: 96px;
+        height: 175px;
+        border-radius: 20px;
+        Text {
+            x: 9px;
+            y: 10px;
+            text: "蒜鸟";
+            color: Theme.phone-fg;
+            font-size: 9px;
+            font-weight: 800;
+        }
+        Rectangle {
+            x: 6px;
+            y: 28px;
+            width: 74px;
+            height: 66px;
+            border-radius: 8px;
+            background: Theme.phone-tile;
+            Text {
+                text: "触控板";
+                color: Theme.phone-mut;
+                font-size: 7.5px;
+            }
+        }
+        for k in 6: Rectangle {
+            x: 6px + Math.mod(k, 3) * 26px;
+            y: 102px + Math.floor(k / 3) * 23px;
+            width: 22px;
+            height: 18px;
+            border-radius: 5px;
+            background: Theme.phone-tile;
+        }
+    }
+}
+
+// 「扫码走局域网」那页的插图：电脑上出二维码，手机上蒜鸟的扫码界面对准、扫描线扫过，认出来打勾，
+// 手机换成蒜鸟、顶上写「局域网」；中间小点变成绿线，Wi-Fi 标志外面一圈绿、旁边挂「局域网」
+component LanStage inherits Stage {
+    property <float> t: Math.mod(root.since, 7000);
+    property <float> back: 1 - Tween.seg(root.t, 6500, 6900);
+    property <float> qr-in: Tween.decel(Tween.seg(root.t, 200, 700));
+    property <float> aim: Tween.smooth(Tween.seg(root.t, 900, 1500)) * root.back;
+    property <float> sweep: Tween.seg(root.t, 1500, 3000);
+    property <float> found: Tween.seg(root.t, 3000, 3150) * root.back;
+    property <float> app: Tween.smooth(Tween.seg(root.t, 3600, 3950)) * root.back;
+    property <float> link: Tween.decel(Tween.seg(root.t, 4000, 4450)) * root.back;
+    property <float> bound: Tween.seg(root.t, 4100, 4300) * root.back;
+    // 电脑：屏幕里面的左上角 (scr-x, scr-y)，和配对那页一样大
+    property <length> lap-w: 228px;
+    property <length> lap-h: 140px;
+    property <length> lap-x: (root.width - root.lap-w - 30px) / 2;
+    property <length> lap-y: root.height * 0.08;
+    // 手机
+    property <length> phone-w: 118px;
+    property <length> phone-h: 226px;
+    property <length> phone-x: (root.width - root.phone-w) / 2;
+    property <length> phone-y: root.height - root.phone-h - root.height * 0.07;
+    property <length> app-w: root.phone-w - 10px;
+    property <length> app-h: root.phone-h - 10px;
+    // 中间 Wi-Fi 标志的圆心
+    property <length> mid-y: (root.lap-y + root.lap-h + 10px + root.phone-y) / 2;
+    // 取景框
+    property <length> vf: 64px;
+    property <length> vf-x: (root.app-w - root.vf) / 2;
+    property <length> vf-y: 62px;
+    property <color> corner: root.found > 0.5 ? Theme.lime-dot : #ffffff;
+    MiniLaptop {
+        x: root.lap-x;
+        y: root.lap-y;
+        screen-width: root.lap-w;
+        screen-height: root.lap-h;
+        Text {
+            x: 12px;
+            y: 10px;
+            text: "扫码连接手机";
+            color: Theme.fg;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        Rectangle {
+            x: 12px;
+            y: 30px;
+            width: 86px;
+            height: 86px;
+            border-radius: 4px;
+            background: #ffffff;
+            border-width: 1px;
+            border-color: Theme.line2;
+            opacity: 0.4 + 0.6 * root.qr-in * Math.max(root.back, 0.4);
+            Image {
+                x: 5px;
+                y: 5px;
+                width: 76px;
+                height: 76px;
+                source: @image-url("../icons/qr-sample.svg");
+                colorize: #141414;
+            }
+            // 绑好了：二维码上盖一层白，中间打勾
+            Rectangle {
+                background: #ffffff.with-alpha(0.82 * root.bound);
+                border-radius: 4px;
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 38px * Tween.pop(Tween.seg(root.t, 4100, 4450)) * root.back;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.lime;
+                visible: root.bound > 0.01;
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    source: @image-url("../icons/check.svg");
+                    colorize: Theme.lime-fg;
+                    opacity: Tween.seg(root.t, 4250, 4450);
+                }
+            }
+        }
+        for k in 3: Rectangle {
+            x: 112px;
+            y: 44px + k * 16px;
+            width: k == 2 ? 56px : 84px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: Theme.line2;
+        }
+        Text {
+            x: 112px;
+            y: 98px;
+            text: "已绑定";
+            color: Theme.lime-fg;
+            font-size: 11px;
+            font-weight: 700;
+            opacity: root.bound;
+        }
+    }
+    // 中间：没连上是一串小点一闪一闪、Wi-Fi 标志一圈圈往外扩；连上变成绿线，标志外面一圈绿、旁边挂「局域网」
+    for k in 6: Rectangle {
+        property <length> top: root.lap-y + root.lap-h + 20px;
+        property <length> span: root.phone-y - 10px - self.top;
+        x: root.width / 2 - 3px;
+        y: self.top + self.span * (k + 0.5) / 6 - 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.mut;
+        opacity: (0.25 + 0.75 * Tween.wave(Math.mod(root.since / 1200 - k * 0.2 + 1, 1))) * (1 - root.link);
+    }
+    Rectangle {
+        x: root.width / 2 - 2px;
+        y: root.lap-y + root.lap-h + 20px;
+        width: 4px;
+        height: (root.phone-y - 10px - self.y) * root.link;
+        border-radius: 2px;
+        background: Theme.lime-dot;
+    }
+    for k in 2: Rectangle {
+        property <float> p: Math.mod(root.since + k * 700, 1400) / 1400;
+        width: 44px + 30px * self.p;
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: root.mid-y - self.height / 2;
+        border-radius: self.width / 2;
+        border-width: 1.5px;
+        border-color: Theme.mut.with-alpha(0.55 * (1 - self.p) * (1 - root.link));
+    }
+    Rectangle {
+        width: 44px + 10px * root.link;
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: root.mid-y - self.height / 2;
+        border-radius: self.width / 2;
+        border-width: 2.5px;
+        border-color: Theme.lime-dot.with-alpha(root.link);
+        background: Theme.soft.with-alpha(root.link);
+    }
+    Rectangle {
+        x: (root.width - 44px) / 2;
+        y: root.mid-y - 22px;
+        width: 44px;
+        height: 44px;
+        border-radius: 22px;
+        background: Theme.ink;
+        Image {
+            width: 22px;
+            height: 22px;
+            source: @image-url("../icons/wifi.svg");
+            colorize: Theme.ink-fg;
+        }
+    }
+    Rectangle {
+        x: root.width / 2 + 34px + (1 - root.link) * 6px;
+        y: root.mid-y - 11px;
+        width: lan-label.preferred-width + 18px;
+        height: 22px;
+        border-radius: 11px;
+        background: Theme.lime;
+        opacity: root.link;
+        lan-label := Text {
+            text: "局域网";
+            color: Theme.lime-fg;
+            font-size: 11px;
+            font-weight: 700;
+        }
+    }
+    MiniPhone {
+        x: root.phone-x;
+        y: root.phone-y;
+        width: root.phone-w;
+        height: root.phone-h;
+        // 扫码界面
+        Rectangle {
+            border-radius: 21px;
+            background: #262624;
+            opacity: 1 - root.app;
+            visible: self.opacity > 0.01;
+            Text {
+                y: 22px;
+                width: parent.width;
+                horizontal-alignment: center;
+                text: "扫码";
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            // 对准了：取景框里出现二维码（从大、偏一点到正好放进框里）
+            Rectangle {
+                width: Tween.lerp(84px, 54px, root.aim);
+                height: self.width;
+                x: root.vf-x + (root.vf - self.width) / 2 + (1 - root.aim) * 16px;
+                y: root.vf-y + (root.vf - self.height) / 2 - (1 - root.aim) * 10px;
+                border-radius: 3px;
+                background: #ffffff;
+                opacity: root.aim;
+                visible: self.opacity > 0.01;
+                Image {
+                    x: parent.width * 0.06;
+                    y: parent.height * 0.06;
+                    width: parent.width * 0.88;
+                    height: parent.height * 0.88;
+                    source: @image-url("../icons/qr-sample.svg");
+                    colorize: #262624;
+                }
+            }
+            // 取景框的四个角
+            for cn[i] in [
+                { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 },
+            ]: Rectangle {
+                x: root.vf-x + cn.x * (root.vf - 14px);
+                y: root.vf-y + cn.y * (root.vf - 14px);
+                width: 14px;
+                height: 14px;
+                Rectangle {
+                    y: cn.y * 11.5px;
+                    width: 14px;
+                    height: 2.5px;
+                    border-radius: 1.25px;
+                    background: root.corner;
+                }
+                Rectangle {
+                    x: cn.x * 11.5px;
+                    width: 2.5px;
+                    height: 14px;
+                    border-radius: 1.25px;
+                    background: root.corner;
+                }
+            }
+            // 扫描线：对准以后从上往下扫两遍，认出来就停
+            Rectangle {
+                property <length> line-y: root.vf-y + 4px + (root.vf - 8px) * Math.mod(root.sweep * 2, 1);
+                x: root.vf-x + 4px;
+                y: self.line-y - 16px;
+                width: root.vf - 8px;
+                height: 16px;
+                background: @linear-gradient(180deg, Theme.lime-dot.with-alpha(0) 0%, Theme.lime-dot.with-alpha(0.4) 100%);
+                opacity: root.sweep > 0 && root.found < 1 ? 1 - root.found : 0;
+            }
+            Rectangle {
+                x: root.vf-x + 3px;
+                y: root.vf-y + 4px + (root.vf - 8px) * Math.mod(root.sweep * 2, 1) - 1px;
+                width: root.vf - 6px;
+                height: 2.5px;
+                border-radius: 1.25px;
+                background: Theme.lime-dot;
+                opacity: root.sweep > 0 && root.found < 1 ? 1 - root.found : 0;
+            }
+            // 认出来了：中间一个绿圈打勾
+            Rectangle {
+                width: 30px * Tween.pop(Tween.seg(root.t, 3000, 3350)) * root.back;
+                height: self.width;
+                x: root.vf-x + (root.vf - self.width) / 2;
+                y: root.vf-y + (root.vf - self.height) / 2;
+                border-radius: self.width / 2;
+                background: Theme.lime-dot;
+                visible: root.found > 0.01;
+                Image {
+                    width: 16px;
+                    height: 16px;
+                    source: @image-url("../icons/check.svg");
+                    colorize: #141414;
+                    opacity: Tween.seg(root.t, 3100, 3300);
+                }
+            }
+            Text {
+                y: root.app-h - 40px;
+                width: parent.width;
+                horizontal-alignment: center;
+                text: root.found > 0.5 ? "正在连接…" : "对准电脑上的二维码";
+                color: #cfcfca;
+                font-size: 8.5px;
+            }
+        }
+        // 认出来以后换成蒜鸟：顶上先写「连接中」，连上写「局域网」
+        MiniApp {
+            x: 0;
+            y: 0;
+            width: root.app-w;
+            height: root.app-h;
+            since: root.since;
+            online: root.link > 0.5;
+            status-text: root.link > 0.5 ? "局域网" : "连接中";
+            opacity: root.app;
+            visible: self.opacity > 0.01;
+        }
+    }
+}
+
+// 「让手机扫码配对」那页的插图：电脑上出二维码，手机扫码界面对准、扫描线扫过；手机底下弹出系统的「蓝牙配对请求」，
+// 手指点「配对」，电脑上挂出「自动同意」；配好了手机换成蒜鸟、顶上写「蓝牙」，中间小点变成绿线、二维码打勾
+component ScanPairStage inherits Stage {
+    property <float> t: Math.mod(root.since, 7600);
+    property <float> back: 1 - Tween.seg(root.t, 7100, 7500);
+    property <float> qr-in: Tween.decel(Tween.seg(root.t, 200, 700));
+    property <float> aim: Tween.smooth(Tween.seg(root.t, 900, 1500)) * root.back;
+    property <float> sweep: Tween.seg(root.t, 1500, 2600);
+    property <float> found: Tween.seg(root.t, 2600, 2750) * root.back;
+    property <float> prompt: Tween.decel(Tween.seg(root.t, 2900, 3300)) * root.back;
+    property <float> tap: Tween.seg(root.t, 3900, 4300);
+    property <float> agree: Tween.smooth(Tween.seg(root.t, 4000, 4300)) * root.back;
+    property <float> app: Tween.smooth(Tween.seg(root.t, 4700, 5050)) * root.back;
+    property <float> link: Tween.decel(Tween.seg(root.t, 5100, 5550)) * root.back;
+    property <float> bound: Tween.seg(root.t, 5200, 5400) * root.back;
+    // 电脑、手机的位置和局域网那页一样
+    property <length> lap-w: 228px;
+    property <length> lap-h: 140px;
+    property <length> lap-x: (root.width - root.lap-w - 30px) / 2;
+    property <length> lap-y: root.height * 0.08;
+    property <length> phone-w: 118px;
+    property <length> phone-h: 226px;
+    property <length> phone-x: (root.width - root.phone-w) / 2;
+    property <length> phone-y: root.height - root.phone-h - root.height * 0.07;
+    property <length> app-w: root.phone-w - 10px;
+    property <length> app-h: root.phone-h - 10px;
+    property <length> mid-y: (root.lap-y + root.lap-h + 10px + root.phone-y) / 2;
+    property <length> vf: 64px;
+    property <length> vf-x: (root.app-w - root.vf) / 2;
+    property <length> vf-y: 62px;
+    property <color> corner: root.found > 0.5 ? Theme.lime-dot : #ffffff;
+    // 系统的配对框
+    property <length> sheet-h: 96px;
+    MiniLaptop {
+        x: root.lap-x;
+        y: root.lap-y;
+        screen-width: root.lap-w;
+        screen-height: root.lap-h;
+        Text {
+            x: 12px;
+            y: 10px;
+            text: "扫码连接手机";
+            color: Theme.fg;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        Rectangle {
+            x: 12px;
+            y: 30px;
+            width: 86px;
+            height: 86px;
+            border-radius: 4px;
+            background: #ffffff;
+            border-width: 1px;
+            border-color: Theme.line2;
+            opacity: 0.4 + 0.6 * root.qr-in * Math.max(root.back, 0.4);
+            Image {
+                x: 5px;
+                y: 5px;
+                width: 76px;
+                height: 76px;
+                source: @image-url("../icons/qr-sample.svg");
+                colorize: #141414;
+            }
+            Rectangle {
+                background: #ffffff.with-alpha(0.82 * root.bound);
+                border-radius: 4px;
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 38px * Tween.pop(Tween.seg(root.t, 5200, 5550)) * root.back;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.lime;
+                visible: root.bound > 0.01;
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    source: @image-url("../icons/check.svg");
+                    colorize: Theme.lime-fg;
+                    opacity: Tween.seg(root.t, 5350, 5550);
+                }
+            }
+        }
+        for k in 3: Rectangle {
+            x: 112px;
+            y: 44px + k * 16px;
+            width: k == 2 ? 56px : 84px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: Theme.line2;
+            opacity: 1 - root.bound;
+        }
+        // 手机点了「配对」：电脑这边挂出「自动同意」
+        Rectangle {
+            x: 112px + (1 - root.agree) * 6px;
+            y: 94px;
+            width: agree-row.preferred-width + 14px;
+            height: 18px;
+            border-radius: 9px;
+            background: Theme.lime;
+            opacity: root.agree * (1 - root.bound);
+            agree-row := HorizontalLayout {
+                padding-left: 7px;
+                padding-right: 7px;
+                spacing: 3px;
+                alignment: center;
+                Image {
+                    y: (parent.height - self.height) / 2;
+                    width: 9px;
+                    height: 9px;
+                    source: @image-url("../icons/check.svg");
+                    colorize: Theme.lime-fg;
+                }
+                Text {
+                    text: "自动同意";
+                    color: Theme.lime-fg;
+                    font-size: 9px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Text {
+            x: 112px;
+            y: 50px;
+            width: 90px;
+            text: "已用蓝牙\n配对";
+            color: Theme.lime-fg;
+            font-size: 11px;
+            font-weight: 700;
+            opacity: root.bound;
+        }
+    }
+    // 中间：没连上是一串小点一闪一闪、蓝牙标志一圈圈往外扩；连上变成绿线，标志外面一圈绿、旁边挂「蓝牙」
+    for k in 6: Rectangle {
+        property <length> top: root.lap-y + root.lap-h + 20px;
+        property <length> span: root.phone-y - 10px - self.top;
+        x: root.width / 2 - 3px;
+        y: self.top + self.span * (k + 0.5) / 6 - 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.mut;
+        opacity: (0.25 + 0.75 * Tween.wave(Math.mod(root.since / 1200 - k * 0.2 + 1, 1))) * (1 - root.link);
+    }
+    Rectangle {
+        x: root.width / 2 - 2px;
+        y: root.lap-y + root.lap-h + 20px;
+        width: 4px;
+        height: (root.phone-y - 10px - self.y) * root.link;
+        border-radius: 2px;
+        background: Theme.lime-dot;
+    }
+    for k in 2: Rectangle {
+        property <float> p: Math.mod(root.since + k * 700, 1400) / 1400;
+        width: 44px + 30px * self.p;
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: root.mid-y - self.height / 2;
+        border-radius: self.width / 2;
+        border-width: 1.5px;
+        border-color: Theme.mut.with-alpha(0.55 * (1 - self.p) * (1 - root.link));
+    }
+    Rectangle {
+        width: 44px + 10px * root.link;
+        height: self.width;
+        x: (root.width - self.width) / 2;
+        y: root.mid-y - self.height / 2;
+        border-radius: self.width / 2;
+        border-width: 2.5px;
+        border-color: Theme.lime-dot.with-alpha(root.link);
+        background: Theme.soft.with-alpha(root.link);
+    }
+    Rectangle {
+        x: (root.width - 44px) / 2;
+        y: root.mid-y - 22px;
+        width: 44px;
+        height: 44px;
+        border-radius: 22px;
+        background: Theme.ink;
+        Image {
+            width: 22px;
+            height: 22px;
+            source: @image-url("../icons/bluetooth.svg");
+            colorize: Theme.ink-fg;
+        }
+    }
+    Rectangle {
+        x: root.width / 2 + 34px + (1 - root.link) * 6px;
+        y: root.mid-y - 11px;
+        width: bt-label.preferred-width + 18px;
+        height: 22px;
+        border-radius: 11px;
+        background: Theme.lime;
+        opacity: root.link;
+        bt-label := Text {
+            text: "蓝牙";
+            color: Theme.lime-fg;
+            font-size: 11px;
+            font-weight: 700;
+        }
+    }
+    MiniPhone {
+        x: root.phone-x;
+        y: root.phone-y;
+        width: root.phone-w;
+        height: root.phone-h;
+        // 扫码界面
+        Rectangle {
+            border-radius: 21px;
+            background: #262624;
+            clip: true;
+            opacity: 1 - root.app;
+            visible: self.opacity > 0.01;
+            Text {
+                y: 22px;
+                width: parent.width;
+                horizontal-alignment: center;
+                text: "扫码配对";
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            Rectangle {
+                width: Tween.lerp(84px, 54px, root.aim);
+                height: self.width;
+                x: root.vf-x + (root.vf - self.width) / 2 + (1 - root.aim) * 16px;
+                y: root.vf-y + (root.vf - self.height) / 2 - (1 - root.aim) * 10px;
+                border-radius: 3px;
+                background: #ffffff;
+                opacity: root.aim;
+                visible: self.opacity > 0.01;
+                Image {
+                    x: parent.width * 0.06;
+                    y: parent.height * 0.06;
+                    width: parent.width * 0.88;
+                    height: parent.height * 0.88;
+                    source: @image-url("../icons/qr-sample.svg");
+                    colorize: #262624;
+                }
+            }
+            for cn[i] in [
+                { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 },
+            ]: Rectangle {
+                x: root.vf-x + cn.x * (root.vf - 14px);
+                y: root.vf-y + cn.y * (root.vf - 14px);
+                width: 14px;
+                height: 14px;
+                Rectangle {
+                    y: cn.y * 11.5px;
+                    width: 14px;
+                    height: 2.5px;
+                    border-radius: 1.25px;
+                    background: root.corner;
+                }
+                Rectangle {
+                    x: cn.x * 11.5px;
+                    width: 2.5px;
+                    height: 14px;
+                    border-radius: 1.25px;
+                    background: root.corner;
+                }
+            }
+            Rectangle {
+                property <length> line-y: root.vf-y + 4px + (root.vf - 8px) * Math.mod(root.sweep * 2, 1);
+                x: root.vf-x + 4px;
+                y: self.line-y - 16px;
+                width: root.vf - 8px;
+                height: 16px;
+                background: @linear-gradient(180deg, Theme.lime-dot.with-alpha(0) 0%, Theme.lime-dot.with-alpha(0.4) 100%);
+                opacity: root.sweep > 0 && root.found < 1 ? 1 - root.found : 0;
+            }
+            Rectangle {
+                x: root.vf-x + 3px;
+                y: root.vf-y + 4px + (root.vf - 8px) * Math.mod(root.sweep * 2, 1) - 1px;
+                width: root.vf - 6px;
+                height: 2.5px;
+                border-radius: 1.25px;
+                background: Theme.lime-dot;
+                opacity: root.sweep > 0 && root.found < 1 ? 1 - root.found : 0;
+            }
+            Text {
+                y: root.app-h - 40px;
+                width: parent.width;
+                horizontal-alignment: center;
+                text: "对准电脑上的二维码";
+                color: #cfcfca;
+                font-size: 8.5px;
+                opacity: 1 - root.prompt;
+            }
+            // 系统弹的「蓝牙配对请求」：从底下滑上来，手指点「配对」
+            Rectangle {
+                x: 5px;
+                y: root.app-h - 5px - root.sheet-h * root.prompt;
+                width: root.app-w - 10px;
+                height: root.sheet-h;
+                border-radius: 14px;
+                background: #ffffff;
+                visible: root.prompt > 0.01;
+                Text {
+                    y: 10px;
+                    width: parent.width;
+                    horizontal-alignment: center;
+                    text: "蓝牙配对请求";
+                    color: #141414;
+                    font-size: 8.5px;
+                    font-weight: 700;
+                }
+                Text {
+                    y: 24px;
+                    width: parent.width;
+                    horizontal-alignment: center;
+                    text: "PC-20260715VSWE";
+                    color: #8a8a85;
+                    font-size: 6px;
+                }
+                Text {
+                    y: 36px;
+                    width: parent.width;
+                    horizontal-alignment: center;
+                    text: "385 216";
+                    color: #141414;
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+                Rectangle {
+                    x: 8px;
+                    y: parent.height - 30px;
+                    width: (parent.width - 22px) / 2;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: #ecece8;
+                    Text {
+                        text: "取消";
+                        color: #555550;
+                        font-size: 7.5px;
+                    }
+                }
+                ok := Rectangle {
+                    x: parent.width / 2 + 3px;
+                    y: parent.height - 30px;
+                    width: (parent.width - 22px) / 2;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: #141414;
+                    Text {
+                        text: "配对";
+                        color: #ffffff;
+                        font-size: 7.5px;
+                        font-weight: 700;
+                    }
+                }
+                // 手指点下去：一个圈从按钮中间扩开、变淡
+                Rectangle {
+                    width: 14px + 22px * root.tap;
+                    height: self.width;
+                    x: ok.x + ok.width / 2 - self.width / 2;
+                    y: ok.y + ok.height / 2 - self.height / 2;
+                    border-radius: self.width / 2;
+                    border-width: 2px;
+                    border-color: Theme.lime-dot.with-alpha(root.tap > 0 && root.tap < 1 ? 1 - root.tap : 0);
+                    background: Theme.lime-dot.with-alpha(root.tap > 0 && root.tap < 1 ? 0.35 * (1 - root.tap) : 0);
+                }
+            }
+        }
+        // 配好了换成蒜鸟：顶上先写「连接中」，连上写「蓝牙」
+        MiniApp {
+            x: 0;
+            y: 0;
+            width: root.app-w;
+            height: root.app-h;
+            since: root.since;
+            online: root.link > 0.5;
+            status-text: root.link > 0.5 ? "蓝牙" : "连接中";
+            opacity: root.app;
+            visible: self.opacity > 0.01;
+        }
     }
 }
 
@@ -8504,6 +9621,40 @@ component TutFeature inherits HorizontalLayout {
 }
 
 // 教程里的一块浅底：实时状态、开关
+// 页底一行：灰字引子 + 粗体可点的链接（「扫不了码？改用系统蓝牙配对 ›」）
+component TutLink inherits HorizontalLayout {
+    in property <string> lead;
+    in property <string> link;
+    callback clicked();
+    alignment: start;
+    spacing: 2px;
+    Text {
+        text: root.lead;
+        color: Theme.mut;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        width: link-text.preferred-width + 4px;
+        height: 24px;
+        border-radius: 6px;
+        background: link-area.has-hover ? Theme.hover : transparent;
+        link-text := Text {
+            text: root.link;
+            color: Theme.fg;
+            font-size: 13px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        link-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.clicked();
+            }
+        }
+    }
+}
+
 component TutBox inherits Rectangle {
     background: Theme.soft;
     border-radius: 12px;
@@ -8515,6 +9666,103 @@ component TutBox inherits Rectangle {
         padding-top: 5px;
         padding-bottom: 5px;
         @children
+    }
+}
+
+// 教程「选一种连接方式」的一张卡片：点了就选中（黑框、右上角打勾），不翻页
+component TutChoice inherits Rectangle {
+    in property <image> icon;
+    in property <string> name;
+    in property <string> tag;
+    in property <string> line1;
+    in property <string> line2;
+    in property <bool> selected;
+    callback clicked();
+    height: 115px;
+    border-radius: 12px;
+    background: root.selected ? Theme.win : area.has-hover ? Theme.hover : Theme.soft;
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? Theme.ink : Theme.line;
+    animate background, border-color { duration: 180ms; }
+    Rectangle {
+        x: 12px;
+        y: 12px;
+        width: 31px;
+        height: 31px;
+        border-radius: 15.5px;
+        background: root.selected ? Theme.ink : Theme.win;
+        border-width: root.selected ? 0px : 1px;
+        border-color: Theme.line2;
+        animate background { duration: 180ms; }
+        Image {
+            width: 16px;
+            height: 16px;
+            source: root.icon;
+            colorize: root.selected ? Theme.ink-fg : Theme.fg;
+        }
+    }
+    HorizontalLayout {
+        x: 52px;
+        y: 12px;
+        height: 31px;
+        spacing: 7px;
+        alignment: start;
+        Text {
+            text: root.name;
+            color: Theme.fg;
+            font-size: 15px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            Chip {
+                text: root.tag;
+                tone: 1;
+                height: 19px;
+            }
+        }
+    }
+    // 右上角：没选是空圈，选中是浅绿圈打勾
+    Rectangle {
+        x: parent.width - 28px;
+        y: 15px;
+        width: 17px;
+        height: 17px;
+        border-radius: 8.5px;
+        background: root.selected ? Theme.lime : Theme.win;
+        border-width: root.selected ? 0px : 1.5px;
+        border-color: Theme.line2;
+        if root.selected: Image {
+            width: 11px;
+            height: 11px;
+            source: @image-url("../icons/check.svg");
+            colorize: Theme.lime-fg;
+        }
+    }
+    Text {
+        x: 13px;
+        y: 57px;
+        width: parent.width - 26px;
+        text: root.line1;
+        color: Theme.fg2;
+        font-size: 12.5px;
+        overflow: elide;
+    }
+    Text {
+        x: 13px;
+        y: 79px;
+        width: parent.width - 26px;
+        text: root.line2;
+        color: Theme.mut;
+        font-size: 12.5px;
+        overflow: elide;
+    }
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
     }
 }
 
@@ -8578,14 +9826,29 @@ component TutorialDialog inherits Rectangle {
     in property <int> check-paired: -1;
     in property <string> bluetooth-note;
     in property <string> paired-note;
+    // 扫码绑定过的手机、现在是不是走局域网连着、是不是用蓝牙连着
+    in property <[LanPhoneRow]> lan-phones;
+    in property <bool> lan-online;
+    in property <bool> bt-online;
     in-out property <bool> autostart;
     callback start-core();
     callback open-bluetooth-settings();
     callback recheck();
     callback autostart-changed(bool);
-    // 关掉了（淡出以后）；报告最远看到第几页
+    // 「显示二维码」：打开扫码绑定手机的窗口（盖在教程上面）
+    callback lan-pair();
+    // 关掉了（淡出以后）；报告最远看到第几页（页的编号见下面，托盘页是 10）
     callback closed(int);
-    property <int> count: 9;
+    // 页的编号（固定，不管走哪条路）：0 欢迎 · 1 手机上也装好蒜鸟 · 2 选一种连接方式 ·
+    // 3 让手机扫码配对（走蓝牙时）· 4 蓝牙配对 · 5 在手机上选这台电脑（这两页是蓝牙的备选：扫不了码时）·
+    // 6 让手机扫一下二维码（只在走局域网时出现）· 7 布局 · 8 映射 · 9 手机上怎么用 · 10 托盘、开机自启 · 11 准备好了
+    // way：第 2 页选的连接方式，0 还没选 1 蓝牙 2 局域网。只走选中的那条路：跳过的页不显示，
+    // 圆点只按要走的页数算（还没选时按蓝牙那条算）；上一步、点圆点、← → 都按这条路走。
+    // manual：蓝牙走备选（系统蓝牙里配对 + 手机上选电脑，4、5 两页），不走扫码配对（3）
+    property <int> way;
+    property <bool> manual;
+    property <int> count: 12;
+    property <int> steps: root.way != 2 && root.manual ? 10 : 9;
     property <int> current: root.start-page;
     property <int> furthest: root.start-page;
     property <bool> shown;
@@ -8595,15 +9858,41 @@ component TutorialDialog inherits Rectangle {
     property <bool> open: root.shown && !root.closing;
     property <length> art-w: 340px;
     property <length> text-x: root.art-w + 48px;
+    // 页 → 这条路上的第几步（圆点）
+    pure function step-of(page: int) -> int {
+        return root.way == 2 ? (page <= 2 ? page : page - 3)
+            : root.manual ? (page <= 2 ? page : page <= 5 ? page - 1 : page - 2)
+            : (page <= 3 ? page : page - 3);
+    }
+    // 这条路上的第几步 → 页
+    pure function page-of(step: int) -> int {
+        return root.way == 2 ? (step <= 2 ? step : step + 3)
+            : root.manual ? (step <= 2 ? step : step <= 4 ? step + 1 : step + 2)
+            : (step <= 3 ? step : step + 3);
+    }
+    // 扫码配对 ↔ 系统蓝牙配对：换路，停在新路的配对页
+    function use-manual(on: bool) {
+        root.manual = on;
+        root.go(on ? 4 : 3);
+    }
     function go(page: int) {
         if (page >= 0 && page < root.count) {
             root.current = page;
             root.furthest = Math.max(root.furthest, page);
         }
     }
+    function go-step(step: int) {
+        if (step >= 0 && step < root.steps) {
+            root.go(root.page-of(step));
+        }
+    }
     function next() {
-        if (root.current < root.count - 1) {
-            root.go(root.current + 1);
+        // 选连接方式那页：没选就不往下翻
+        if (root.current == 2 && root.way == 0) {
+            return;
+        }
+        if (root.step-of(root.current) < root.steps - 1) {
+            root.go-step(root.step-of(root.current) + 1);
         } else {
             root.closing = true;
         }
@@ -8611,6 +9900,18 @@ component TutorialDialog inherits Rectangle {
     background: (Theme.dark ? #000000b0 : #14141460).with-alpha(root.open ? (Theme.dark ? 0.69 : 0.38) : 0);
     animate background { duration: 220ms; easing: ease-out; }
     init => {
+        // 从首页重新打开：局域网连着、或者扫码绑定过手机，就先选好局域网
+        if (!root.first-run && (root.lan-online || root.lan-phones.length > 0)) {
+            root.way = 2;
+        }
+        // 直接打开到只有一条路才有的页（--tutorial N）：选上那条路
+        if (root.start-page >= 3 && root.start-page <= 5) {
+            root.way = 1;
+            root.manual = root.start-page != 3;
+        }
+        if (root.start-page == 6) {
+            root.way = 2;
+        }
         root.shown = true;
         keys.focus();
     }
@@ -8640,7 +9941,7 @@ component TutorialDialog inherits Rectangle {
                 return accept;
             }
             if (event.text == Key.LeftArrow) {
-                root.go(root.current - 1);
+                root.go-step(root.step-of(root.current) - 1);
                 return accept;
             }
             if (event.text == Key.RightArrow || event.text == Key.Return) {
@@ -8678,27 +9979,37 @@ component TutorialDialog inherits Rectangle {
                 AppStage {
                     active: root.current == 1;
                 }
-                PairStage {
+                ChooseStage {
                     active: root.current == 2;
+                    way: root.way;
                 }
-                PickStage {
+                ScanPairStage {
                     active: root.current == 3;
-                    computer: root.computer-name;
                 }
-                LayoutStage {
+                PairStage {
                     active: root.current == 4;
                 }
-                MapStage {
+                PickStage {
                     active: root.current == 5;
+                    computer: root.computer-name;
                 }
-                UseStage {
+                LanStage {
                     active: root.current == 6;
                 }
-                TrayStage {
+                LayoutStage {
                     active: root.current == 7;
                 }
-                HelloStage {
+                MapStage {
                     active: root.current == 8;
+                }
+                UseStage {
+                    active: root.current == 9;
+                }
+                TrayStage {
+                    active: root.current == 10;
+                }
+                HelloStage {
+                    active: root.current == 11;
                     finale: true;
                 }
             }
@@ -8734,7 +10045,7 @@ component TutorialDialog inherits Rectangle {
                     current: root.current;
                     title: "欢迎使用蒜鸟";
                     TutText {
-                        text: "蒜鸟能把手机变成这台电脑的触控板、快捷键和语音输入。手机和电脑用蓝牙连在一起，不用网络，也不用数据线。";
+                        text: "蒜鸟能把手机变成这台电脑的触控板、快捷键和语音输入。手机和电脑用蓝牙或同一个网络连在一起，不用数据线。";
                     }
                     Rectangle {
                         height: 2px;
@@ -8813,6 +10124,112 @@ component TutorialDialog inherits Rectangle {
                     index: 2;
                     current: root.current;
                     eyebrow: "连接手机 · 第 2 步";
+                    title: "选一种连接方式";
+                    TutText {
+                        text: "两种都能用。先选一种连上，另一种以后也能加。";
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        TutChoice {
+                            horizontal-stretch: 1;
+                            icon: @image-url("../icons/bluetooth.svg");
+                            name: "蓝牙";
+                            tag: "稳定";
+                            line1: "不用网络，在哪都能连";
+                            line2: "传文件慢些，大照片会压缩";
+                            selected: root.way == 1;
+                            clicked => {
+                                root.way = 1;
+                            }
+                        }
+                        TutChoice {
+                            horizontal-stretch: 1;
+                            icon: @image-url("../icons/wifi.svg");
+                            name: "局域网";
+                            tag: "更快";
+                            line1: "和手机连着同一个 Wi-Fi 时用";
+                            line2: "延迟更低，传文件快得多";
+                            selected: root.way == 2;
+                            clicked => {
+                                root.way = 2;
+                            }
+                        }
+                    }
+                    if root.way != 0: Text {
+                        text: root.way == 1 ? "接下来：显示二维码，让手机扫一下配上蓝牙" : "接下来：显示二维码，让手机扫一下";
+                        color: Theme.fg;
+                        font-size: 13.5px;
+                        font-weight: 700;
+                    }
+                    Muted {
+                        text: "拿不准就选蓝牙。手机上的教程也选同一种。";
+                        font-size: 13px;
+                    }
+                }
+                TutorialPage {
+                    index: 3;
+                    current: root.current;
+                    eyebrow: "连接手机 · 第 3 步";
+                    title: "让手机扫码配对";
+                    TutText {
+                        text: "不用去蓝牙设置里搜设备、核对数字，扫一次就行。";
+                    }
+                    TutStep {
+                        number: "1";
+                        text: "电脑：点下面的「显示二维码」。";
+                    }
+                    TutStep {
+                        number: "2";
+                        text: "手机：打开蒜鸟，点「···」→「选择电脑」→「扫码配对新电脑」，对准二维码。";
+                    }
+                    TutStep {
+                        number: "3";
+                        text: "手机上弹出「配对」，点一下。电脑这边自动同意，不用点。";
+                    }
+                    TutBox {
+                        CheckRow {
+                            state: root.check-bluetooth;
+                            title: root.check-bluetooth == 1 ? "电脑蓝牙已打开" : root.check-bluetooth == 0 ? "电脑蓝牙没开" : "正在检查电脑蓝牙…";
+                            note: root.bluetooth-note;
+                        }
+                        CheckRow {
+                            state: root.bt-online || root.check-paired == 1 ? 1 : root.check-paired;
+                            title: root.bt-online ? "已经连上了" : root.check-paired == 1 ? "已经和手机配对" : root.check-paired == 0 ? "还没和手机配对" : "正在检查配对…";
+                            note: root.bt-online ? (root.device != "" ? root.device + " · 用蓝牙连着" : "用蓝牙连着") : root.check-paired == 1 ? "手机上打开蒜" + "鸟就会连上" : root.check-paired == 0 ? "手机扫码配好，这里就会打勾" : "";
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        GhostButton {
+                            text: "显示二维码";
+                            has-icon: true;
+                            icon: @image-url("../icons/qr.svg");
+                            clicked => {
+                                root.lan-pair();
+                            }
+                        }
+                        GhostButton {
+                            text: root.checking ? "检查中…" : "重新检查";
+                            enabled: !root.checking;
+                            clicked => {
+                                root.checking = true;
+                                root.recheck();
+                            }
+                        }
+                    }
+                    TutLink {
+                        lead: "扫不了码？";
+                        link: "改用系统蓝牙配对 ›";
+                        clicked => {
+                            root.use-manual(true);
+                        }
+                    }
+                }
+                TutorialPage {
+                    index: 4;
+                    current: root.current;
+                    eyebrow: "连接手机 · 第 3 步";
                     title: "把手机和电脑蓝牙配对";
                     TutText {
                         text: "配对只要做一次，以后就不用再配了。";
@@ -8861,11 +10278,18 @@ component TutorialDialog inherits Rectangle {
                             }
                         }
                     }
+                    TutLink {
+                        lead: "想省事：";
+                        link: "改回扫码配对 ›";
+                        clicked => {
+                            root.use-manual(false);
+                        }
+                    }
                 }
                 TutorialPage {
-                    index: 3;
+                    index: 5;
                     current: root.current;
-                    eyebrow: "连接手机 · 第 3 步";
+                    eyebrow: "连接手机 · 第 4 步";
                     title: "在手机上选这台电脑";
                     TutText {
                         text: "打开手机上的蒜鸟，在「选择电脑」里点这台电脑：";
@@ -8922,7 +10346,46 @@ component TutorialDialog inherits Rectangle {
                     }
                 }
                 TutorialPage {
-                    index: 4;
+                    index: 6;
+                    current: root.current;
+                    eyebrow: "连接手机 · 第 3 步";
+                    title: "让手机扫一下二维码";
+                    TutText {
+                        text: "扫一次就行，以后手机和电脑在同一个网络里，打开蒜鸟就会自动连上。";
+                    }
+                    TutStep {
+                        number: "1";
+                        text: "电脑：点下面的「显示二维码」。";
+                    }
+                    TutStep {
+                        number: "2";
+                        text: "手机：打开蒜鸟，点右上角「···」→「扫码连接电脑」，对准二维码。";
+                    }
+                    TutBox {
+                        CheckRow {
+                            state: root.lan-phones.length > 0 ? 1 : -1;
+                            title: root.lan-phones.length > 0 ? "已有 " + root.lan-phones.length + " 部手机扫码绑定" : "还没有手机扫码绑定";
+                            note: root.lan-phones.length == 0 ? "手机扫到二维码，这里就会打勾" : root.lan-online ? (root.device != "" ? root.device : root.lan-phones[0].name) + " · 正在用局域网连接" : root.lan-phones[0].name + " · 在同一个网络里会自动连上";
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        GhostButton {
+                            text: "显示二维码";
+                            has-icon: true;
+                            icon: @image-url("../icons/qr.svg");
+                            clicked => {
+                                root.lan-pair();
+                            }
+                        }
+                    }
+                    Muted {
+                        text: "连不上？看看两边是不是同一个网络，或者回上一步选蓝牙。";
+                        font-size: 13px;
+                    }
+                }
+                TutorialPage {
+                    index: 7;
                     current: root.current;
                     eyebrow: "在电脑上调 · 布局";
                     title: "手机上摆什么，在「布局」里定";
@@ -8953,7 +10416,7 @@ component TutorialDialog inherits Rectangle {
                     }
                 }
                 TutorialPage {
-                    index: 5;
+                    index: 8;
                     current: root.current;
                     eyebrow: "在电脑上调 · 映射";
                     title: "每个键做什么，在「映射」里定";
@@ -8984,7 +10447,7 @@ component TutorialDialog inherits Rectangle {
                     }
                 }
                 TutorialPage {
-                    index: 6;
+                    index: 9;
                     current: root.current;
                     eyebrow: "在手机上用";
                     title: "手机上怎么用";
@@ -9020,7 +10483,7 @@ component TutorialDialog inherits Rectangle {
                     }
                 }
                 TutorialPage {
-                    index: 7;
+                    index: 10;
                     current: root.current;
                     eyebrow: "小提示";
                     title: "关掉这个窗口，蒜鸟照样工作";
@@ -9081,7 +10544,7 @@ component TutorialDialog inherits Rectangle {
                     }
                 }
                 TutorialPage {
-                    index: 8;
+                    index: 11;
                     current: root.current;
                     title: "准备好了！";
                     TutText {
@@ -9109,8 +10572,16 @@ component TutorialDialog inherits Rectangle {
                         CheckRow {
                             state: root.connected ? 1 : -1;
                             title: root.connected ? "手机已经连上了" : "手机还没连上";
-                            note: root.connected ? "可以直接用了" : "没关系，首页的「连接手机」会一项项帮你检查";
+                            note: root.connected ? "可以直接用了" : root.way == 2 ? "看看两边是不是同一个网络、手机扫过码没有" : "没关系，首页的「连接手机」会一项项帮你检查";
                         }
+                    }
+                    if root.way != 2: Muted {
+                        text: "想更快：设置 → 扫码连接，扫一次码。";
+                        font-size: 13px;
+                    }
+                    if root.way == 2: Muted {
+                        text: "没有网也想用：再显示一次二维码，手机选「扫码配对新电脑」。";
+                        font-size: 13px;
                     }
                     Muted {
                         text: "想再看一遍这个教程：点首页右上角的「使用教程」。";
@@ -9127,21 +10598,23 @@ component TutorialDialog inherits Rectangle {
                 spacing: 8px;
                 HorizontalLayout {
                     alignment: start;
-                    for i in root.count: Rectangle {
-                        width: (i == root.current ? 22px : 7px) + 8px;
+                    // 只画要走的那条路上的页
+                    for i in root.steps: dot := Rectangle {
+                        property <int> page: root.page-of(i);
+                        width: (self.page == root.current ? 22px : 7px) + 8px;
                         animate width { duration: 420ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
                         Rectangle {
                             x: 4px;
                             width: parent.width - 8px;
                             height: 7px;
                             border-radius: 3.5px;
-                            background: i == root.current ? Theme.fg : i <= root.furthest ? Theme.mut : Theme.line2;
+                            background: dot.page == root.current ? Theme.fg : dot.page <= root.furthest ? Theme.mut : Theme.line2;
                             animate background { duration: 300ms; }
                         }
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
-                                root.go(i);
+                                root.go(dot.page);
                             }
                         }
                     }
@@ -9152,12 +10625,14 @@ component TutorialDialog inherits Rectangle {
                 if root.current > 0: GhostButton {
                     text: "上一步";
                     clicked => {
-                        root.go(root.current - 1);
+                        root.go-step(root.step-of(root.current) - 1);
                     }
                 }
                 PrimaryButton {
                     text: root.current == 0 ? "开始" : root.current < root.count - 1 ? "下一步" : root.first-run ? "开始使用" : "完成";
                     has-icon: root.current < root.count - 1;
+                    // 选连接方式那页：没选时是灰的
+                    enabled: root.current != 2 || root.way != 0;
                     icon-after: true;
                     icon: @image-url("../icons/chev-right.svg");
                     clicked => {
@@ -9403,6 +10878,8 @@ export component AppWindow inherits Window {
     callback export-backup();
     callback import-config();
     callback import-remote(int);
+    callback open-receive-folder();
+    callback pick-receive-folder();
     callback open-logs();
     callback reset-settings(int);
     in property <bool> has-voice-box;
@@ -9425,6 +10902,9 @@ export component AppWindow inherits Window {
     in-out property <bool> enter-after;
     in-out property <int> input-mode;
     in-out property <bool> clip-sync;
+    // 手机发来的文件：存到哪个文件夹、收到后放不放进剪贴板
+    in property <string> receive-folder;
+    in-out property <bool> receive-clip;
     in-out property <int> double-click-ms;
     in-out property <int> long-press-ms;
     in-out property <int> repeat-delay-ms;
@@ -9453,6 +10933,10 @@ export component AppWindow inherits Window {
     in property <[LanPhoneRow]> lan-phones;
     in property <string> lan-error;
     in property <string> link-kind;
+    // 现在走局域网连着手机（教程里扫码那页打勾用）
+    in property <bool> lan-online;
+    // 现在用蓝牙连着手机（教程扫码配对那页打勾用）
+    in property <bool> bt-online;
     callback lan-pair();
     callback lan-close();
     callback lan-remove(string);
@@ -10021,6 +11505,7 @@ export component AppWindow inherits Window {
                                 check-paired: root.check-paired;
                                 bluetooth-note: root.bluetooth-note;
                                 paired-note: root.paired-note;
+                                lan-phones: root.lan-phones;
                                 ask-autostart: root.ask-autostart;
                                 narrow: root.width < 1180px;
                                 open-folder => {
@@ -10041,6 +11526,9 @@ export component AppWindow inherits Window {
                                 }
                                 recheck => {
                                     root.recheck();
+                                }
+                                lan-pair => {
+                                    root.lan-pair();
                                 }
                                 open-tutorial => {
                                     root.tutorial-first-run = false;
@@ -10252,6 +11740,14 @@ export component AppWindow inherits Window {
                                 enter-after <=> root.enter-after;
                                 input-mode <=> root.input-mode;
                                 clip-sync <=> root.clip-sync;
+                                receive-folder: root.receive-folder;
+                                receive-clip <=> root.receive-clip;
+                                open-receive-folder => {
+                                    root.open-receive-folder();
+                                }
+                                pick-receive-folder => {
+                                    root.pick-receive-folder();
+                                }
                                 double-click-ms <=> root.double-click-ms;
                                 long-press-ms <=> root.long-press-ms;
                                 repeat-delay-ms <=> root.repeat-delay-ms;
@@ -10524,7 +12020,13 @@ export component AppWindow inherits Window {
         check-paired: root.check-paired;
         bluetooth-note: root.bluetooth-note;
         paired-note: root.paired-note;
+        lan-phones: root.lan-phones;
+        lan-online: root.lan-online;
+        bt-online: root.bt-online;
         autostart <=> root.autostart;
+        lan-pair => {
+            root.lan-pair();
+        }
         start-core => {
             root.start-core();
         }

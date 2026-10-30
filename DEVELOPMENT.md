@@ -6,7 +6,54 @@
 
 把小米 13 变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接；语音在手机上识别（本地模型，不用联网），只把文字发给电脑。方案见上一级目录的 `方案.md`。
 
-## 当前版本：电脑端 0.7.13 · 手机端 0.9.11
+## 当前版本：电脑端 0.7.20 · 手机端 0.9.19
+
+- 手机端 0.9.19：自己的扫码界面 `ScanActivity.kt`（用户 2026-10-30 定的样子，效果图在 `xiaomi13\界面打板\扫码界面\`；按推荐：保留模式小标签、手电筒在右上角、认出来后停一下再退）。替换掉 zxing-android-embedded 的 `CaptureActivity`（清单里那条 `fullSensor` 覆盖删了，`IntentIntegrator` 不再用），库只用 `BarcodeView`（`DefaultDecoderFactory(QR_CODE)` + `decodeContinuous`）。
+  - 界面：`Layout`（FrameLayout）按取景框摆控件，取景框宽 = 屏宽 × 0.672、顶边在屏高 0.317 处，`setFramingRectSize` 同步给 zxing 只认框里的；`ScanOverlay` 按时间画遮罩（EVEN_ODD 挖圆角框）、四个角（顺着 28dp 圆角的弧画）、光带（1.8 秒一趟，clip 在框里）、认出来的闪光和对勾（`PathMeasure` 一笔画出），`running` 时 `postInvalidateOnAnimation`；图标是 Lucide 路径（`PathParser`）。
+  - 状态：进场（遮罩 220 ms 变暗、四个角 1.16 → 1 软回弹、控件上浮淡入）；认出蒜鸟的码（`LanQr.parse` 过）→ `stopDecoding`、CONFIRM 震、提示换成电脑名 +「正在配对 / 绑定 / 连接…」（按 `EXTRA_MODE`）、1.1 秒后退；别的码 → 抖 360 ms、四角变白、REJECT 震、1.5 秒恢复，同一个码 1.5 秒内不重复抖；8 秒没结果换提示。手电筒按钮只在有闪光灯时出现，`onPause` 关掉。
+  - 结果：`MainActivity.scanComputer` → `startActivityForResult(REQ_SCAN = 8)`，带 `mode`（bt / lan / any；ANY 时蓝牙没准备好按 lan 显示）和小标签字；回来 `text` → `onScanned`，`album` → `pickQrImage()`。进出用窗口动画（`res/anim/scan_enter` 淡入 160 ms、`scan_exit` 淡出 + 放大 1.04 260 ms）：在自己窗口里淡会先变黑再跳回浅色主界面。主题 `SuanNiao.Scan`（深色、透明系统栏）。
+  - 相机预览改用 SurfaceView（`isUseTextureView = false`，库默认 TextureView）：相机画面由系统单独一层合成。
+  - 刷新率：扫码时 `dumpsys display` renderFrameRate 120，窗口投票 120 Exact。framestats 里每 4 个刷新周期出 3 帧（约 90 帧/秒），原因是 RenderThread 的 `eglSwapBuffers` 每帧阻塞约 8.6 ms——主界面（菜单动画）一样是 8.6 ms，关掉识别、换 SurfaceView 都不变，是这台手机上整个 App 的现状，不是扫码界面的问题（以后可以单独查）。
+  - 调试：`--es debugScanFake 内容` 打开扫码界面（蓝牙配对模式），1.5 秒后当成扫到了这段内容，只看动画、不真去连（认出来以后按取消返回）。录屏看动画：`adb shell screenrecord --time-limit 5`，再用 imageio_ffmpeg 自带的 ffmpeg 抽帧拼图（本机 PATH 里没有 ffmpeg）。
+  - 没测到：真对着电脑屏幕扫（手机镜头贴着桌面，画面是黑的；相机在出帧，SurfaceView 帧号在涨）。
+
+- 手机端 0.9.18：重新扫码绑定局域网（同一台电脑，带 `prev`，电脑把旧编号换成新的）时，`lanLoop` 手上正在连的那次还拿着旧编号 → 电脑回 `unknown` → 以前当成「电脑上解除了绑定」、弹提示（新绑定没被改成 revoked，只是误报）。现在 `LanAuthException` 时先看存着的绑定是不是同一台电脑、编号变了、没 revoked：是就记一行 lan.log、`lanKicks` 马上用新的重连，不提示。用 `btpairtest.py lan` 在已绑定的手机上重扫复现过，35 ms 后连上。
+- 电脑端 0.7.20：设置卡片「局域网连接」→「扫码连接」（行「扫码连接手机」/「蓝牙配对、局域网绑定都扫这一个码」），手机列表离线时写「局域网 · 上次连接」；首页 `LanCheck`、教程、手机 `NOT_OUR_QR`、解除局域网绑定的说明、手机教程局域网页第 1 步、两端教程插图里的窗口名都改成「扫码连接」/「扫码连接手机」。
+
+- 电脑端 0.7.19：电脑教程（`TutorialDialog`）页号改成 0–11：0 欢迎、1 装好、2 选方式、3 让手机扫码配对（新，插图 `ScanPairStage`）、4 系统蓝牙配对、5 选电脑（4、5 是蓝牙的备选，`manual` 为真时走）、6 扫码走局域网、7 布局、8 映射、9 怎么用、10 托盘、11 准备好了；`main.rs` `TUTORIAL_TRAY_PAGE = 10`、`TUTORIAL_LAST_PAGE = 11`。蓝牙扫码路 9 步、备选路 10 步、局域网路 9 步（`step-of` / `page-of` 三套换算），`use-manual(bool)` 换路并停在新路的配对页，页底链接是 `TutLink`。`--tutorial 3` 走扫码配对，`4`/`5` 走备选，`6` 走局域网。第 3 页第二项检查用新属性 `bt-online`（`ui/src/lan.rs` 按 `status.links` 里有没有 `bt` 设）。
+- 手机端 0.9.17：教程的蓝牙路改成扫码配对为主（用户 2026-10-30 按推荐定：配对 + 选电脑合成一页、扫不了码换回原来两页、显示「正在配对…」）。
+  - `Tutorial.kt`：新页 `btScanPage`（`BtScanScene` 动画：扫码 → 系统「蓝牙配对请求」浮上来、手指点「配对」→ 电脑冒出「自动同意」→ 换成蒜鸟、连线变实线挂「蓝牙」、二维码打勾），状态卡 `btScanCard`：没权限 `permCard` / `host.btPairing()` 转圈（`SpinBadge`，没按钮）/ 选好的电脑已配对 + `host.btConnected()`「已用蓝牙连上」/ 已配对 / 没配对「扫码」（`ScanFor.BT`）。`btManual`：页底「扫不了码？改用系统蓝牙配对 ›」→ `route()` 换成 `pairPage` + `pickPage`（10 页），配对页底「想省事：改回扫码配对 ›」换回来，`useManual` 原地重排、停在同一页号。每次打开教程 `btManual = false`。二维码画法抽成文件级 `qrModules()`，`LanScene` 和 `BtScanScene` 共用。
+  - `Setup.Host` 加 `btPairing()`（`BtPair.busy`）、`btConnected()`（`LinkService.btConnected`）；`pairBluetooth` 发起配对和结束时都 `refreshOnboarding()`。
+  - 改字：选择页蓝牙「接下来：扫一下电脑上的二维码，配上蓝牙」，最后一页局域网路「没有网也想用：⋯ → 选择电脑 → 扫码配对新电脑。」
+  - 手机上看过：新页三种状态里的「已用蓝牙连上」、动画各帧、改用 / 改回切换（圆点 9 ↔ 10）。没看到真的「正在配对…」（要从头配对一次）。
+
+- 电脑端 0.7.18 / 手机端 0.9.16：扫码蓝牙配对。
+  - 二维码多一个 `bt=电脑蓝牙地址`（`pc/ui/src/lan.rs` `payload`，地址来自 `status.lan.btAddr`）；电脑没连网时 `a` 是空的、只有 `bt` 也出码。旧版手机认不了只有 `bt` 的码（要求 `a` 非空），有 `a` 时照旧只走局域网。配对码 `c` 兼当蓝牙口令。
+  - 电脑 `pc/core/src/btpair.rs`：二维码开着（`lan.rs` `new_code` → `btpair::open`）时 `BluetoothRegisterForAuthenticationEx(NULL)` 接管所有配对确认，数字比较 / 通知配对码直接 `BluetoothSendAuthenticationResponseEx` 同意（这个调用会一直等到配对结束才返回，日志时间比手机上的完成晚一点），PIN 码方式拒绝；同意过的地址记进 `pending`。关二维码 `BluetoothUnregisterAuthentication`，口令留到 10 分钟过期。蓝牙 hello 带 `btc`、或者已连着时单独发 `{"t":"btpair","c":…}`：口令对 → `lan::bt_paired` 写 `justPaired` + `justPairedVia = "bt"`，界面关二维码、提示「已用蓝牙配对」；`pending` 里的地址拿不出对的口令 → `BluetoothRemoveDevice` 删掉配对、断开；`sweep()`（每 5 秒）删掉同意后 120 秒还没带口令连上来的。对端地址用 `RemoteHostName().RawName()`（「(78:d8:…)」）。
+  - 手机 `BtPair.kt`：`getRemoteDevice(bt).createBond()`，听 `ACTION_BOND_STATE_CHANGED`，60 秒超时；已配对直接算成。成了：`LinkService.setBtPairCode`（存 `bt_pair_code` = {addr, code, at}，蓝牙正连着这台就马上发 `btpair`，否则下次 `greet` 的 hello 带 `btc`，发完就删）→ `chooseComputer` → `startLinkIfReady(address)`（教程开着时 `chooseComputer` 不连，这里必须连上去交口令，不然电脑 120 秒后删配对）→ `retryNow`。没权限 / 蓝牙没开时先要（`pendingBtQr`，`REQ_BLUETOOTH` / `REQ_ENABLE_BT` 回来接着配）。
+  - `Setup.ScanFor`：`BT`（「选择电脑」里「扫码配对新电脑」）只配蓝牙；`LAN`（教程扫码页、「扫码走局域网」）只绑局域网；`ANY`（菜单「扫码连接电脑」、别的 App 打开的链接）局域网能绑就绑，蓝牙在已有权限、蓝牙开着（或者码里没有局域网地址）时顺便配，这时局域网失败不报错（`pairWith(quietFail)`）。
+  - **坑**：`connectLoop` 原来对选好的电脑一直连 RFCOMM，电脑没配对时系统会自己发起一次「临时配对」（logcat `Auto-accept temporary pairing`），和 `createBond` 抢，手机报「PIN 码或通行密钥不正确」、电脑回调等 30 秒超时（错误 258）。现在没配对（`bondState != BONDED`）就不连，显示等待。
+  - 测试：`%TEMP%\sn-lan\btpairtest.py bt|lan|any`（写 lan-command 开二维码、拼和界面一样的内容、`debugPairFile` + `debugPairFor`）。从头测要先删两边配对：电脑 `BluetoothRemoveDevice`（PowerShell Add-Type），手机跟着就没了。实测：已配对重扫 3.1 秒；删配对后从头扫，手机点「配对」，7.1 秒连上并核对口令，电脑没弹 Windows 的确认。adb 装完第一次启动，澎湃 OS 会把运行时权限清掉，要启动之后再 `pm grant`。
+  - 没测到：口令不对时删配对、120 秒超时删配对的真机情况；只有 `bt` 没有 `a` 的码；`ANY` 两种一起。
+- 电脑端 0.7.17 / 手机端 0.9.15：教程先选连接方式、App 里直接扫码、首页检查认局域网。
+  - 手机 `Tutorial.kt`：`allPages` 是搭好的全部页，`pages` 是按 `mode`（`Mode.BT` / `Mode.LAN` / null）排出来的要走的页（`route()`）：蓝牙路有配对、选电脑两页，局域网路只有扫码页，没选按蓝牙算。翻页、圆点、`last`、`reachedPad` 都按 `pages`；没走的页 `layoutPages` 里藏起来。选择页没选（`blocked()`）：「下一步」变灰写「先选一种」（`NavBar.dimTo`），`settle` / `drag` / `release` 都不往后翻。第一次打开不预选；从菜单打开按现在的连接预选（局域网绑定了、而且没选蓝牙电脑或局域网正连着 → LAN）。`ChoiceScene` 是选择页的小画，`OptionCard` / `ModeIcon` / `Radio` 是两张选项卡。扫码页 `batteryHolder`：`BackgroundGuide.worthOpening` 时显示「让局域网在后台也连着」，按钮走 `Host.openBatterySettings()`。
+  - 电脑 `app.slint` `TutorialDialog`：页号固定 0–10（0 欢迎、1 装好、2 选方式、3 配对、4 选电脑、5 扫码、6 布局、7 映射、8 怎么用、9 托盘、10 准备好了），`way`（0 没选、1 蓝牙、2 局域网）决定跳过哪几页，两个函数在「页」和「这条路上第几步」之间换算；`main.rs` 的 `TUTORIAL_TRAY_PAGE = 9`、`TUTORIAL_LAST_PAGE = 10`。`--tutorial 3`/`4` 自动走蓝牙、`5` 走局域网。首页 `HomePage` 多了 `lan-phones`、`lan-pair`，检查卡 `LanCheck`：绑定过手机时局域网排第一，蓝牙两项不再报警。
+  - 扫码改回 App 里扫（相机权限和刷新率的复测见下面「相机权限和刷新率」那条）：扫码界面里是 60 Hz（相机预览），回到蒜鸟马上是 120 Hz。
+- 手机端 0.9.14：只连局域网时切出去再回来断了、连不上。原因是澎湃 OS 默认「省电策略 → 智能限制后台运行」在息屏或切到后台约 1 分钟后冻结蒜鸟（`dumpsys activity` 里 delayFreeze / "Controlled"），连前台服务也照冻，冻结时内核把它的 TCP 断掉（手机 `Software caused connection abort`，电脑 10054）；蓝牙不受影响。改成「无限制」就不冻（同时进 deviceidle 白名单、`MILLET_NO_RESTRICT_APP`）。处理：`LinkService.wake()`（回到前台、亮屏时发一个 ping，2 秒没回就关掉重连，退避清零）；心跳发现两次之间隔了 3 秒以上（`THAW_GAP_MS`，刚解冻）也 `wake()`；扫码绑定成功后、菜单「后台保持局域网」带去放开后台限制（`BackgroundGuide`）。局域网的连接、断开写进 `Android/data/dev.suanniao/files/lan.log`（256 KB 轮换）。
+
+- 电脑端 0.7.14 / 手机端 0.9.12：手机文件发到电脑。
+  - 入口：`ShareActivity`（系统分享 `SEND` / `SEND_MULTIPLE`，`*/*`，看不见的透明界面）、菜单「发文件到电脑」（`ACTION_OPEN_DOCUMENT` 多选）。分享来的读权限只在接收的界面开着时有效，所以先 `openInputStream` 打开，再把流交给 `FileSender`（连接服务里的发送线程）慢慢读；只分享文字时发 `clip`。
+  - 协议（`pc/core/src/filerecv.rs` 顶上有完整说明）：`fileStart`（id、batch、index、count、name、size、mime）→ 电脑回 `fileAck got=0` → `filePart`（Base64）… → `fileEnd` → `fileDone`（ok、name / error）；`fileCancel` 取消。电脑 hello 带 `files: true`，没有就提示先更新电脑端。
+  - 流量控制：每块写好电脑回 `fileAck got`，手机发出去的最多比 got 领先一个窗口（局域网 4×64 KB，蓝牙 3×4 KB），连接里不会堆一大截文件数据，触控板、按键插得进去。最近 400 ms 有输入就先停（两种连接都是）。
+  - 速度：局域网实测 2.9～4.3 MB/s（窗口 2 块约 3 MB/s、4 块约 4 MB/s、8 块约 4.5 MB/s，取 4 块：堵在触控板消息前面的最多约 60 ms）。电脑端不是瓶颈（本机假手机发，0.17 秒收 3.8 MB）。
+  - 澎湃 OS 把**前台 App** 的上传排进 Wi-Fi 的视频优先级（`tc -s qdisc show dev wlan0` 看计数：前台时走 tx-5/tx-7，后台走 tx-8～11），这个网络里大块数据又慢又丢包：约 0.2 MB/s、三成的包重发；蒜鸟在后台（从相册分享）就是 3～4 MB/s。按 App 身份分的，App 改不了：试过 TOS（0x20、0xB8）、连上以后设 `SO_PRIORITY` 0、不拿 Wi-Fi 锁，都还在这条队列。和省电策略无关（白名单里照样慢）。对比方法：`adb shell "run-as dev.suanniao sh -c 'nc -q 1 电脑IP 端口 < 文件'"` 和不带 run-as 的同一条，电脑上用 Python 收着计时；蒜鸟在前台、按 Home 以后各测一次。
+  - 所以按实测提示（各家手机做法不一样，不按牌子猜）：一批里局域网上 1 MB 以上的文件平均不到 1 MB/s（不算给触控板让路的时间），界面开着就弹一次（一天最多一次）：大多数块发的时候蒜鸟在前台（`ActivityManager.getMyMemoryState`），建议从相册、文件管理分享；在后台也慢、后台限制没放开，带去设置；别的（网络本身慢）不说。
+  - 后台限制的引导按牌子来（`BackgroundGuide.kt`）：标准的两项（电池优化白名单、`isBackgroundRestricted`）读得到；华为、荣耀、OPPO、vivo、魅族自己的一层读不到，菜单里一直给「后台保持局域网」入口。没放开白名单时弹系统的「允许」框，有自己一层的牌子在它后面垫着自家的设置页（`startActivities`），打不开就去应用详情。说法按牌子：小米「省电策略 → 无限制」、华为荣耀「应用启动管理」、OPPO「耗电管理」、vivo「后台耗电管理」、三星和别的「电池 → 不受限制」。只在小米上实测过，别的牌子的设置页路径按公开资料写的。
+  - 不点手机界面测发送：把文件 `adb push` 到 `/sdcard/Android/data/dev.suanniao/files/`，再 `adb shell am start -n dev.suanniao/.ShareActivity -a android.intent.action.SEND -t application/octet-stream --eu android.intent.extra.STREAM file:///sdcard/Android/data/dev.suanniao/files/文件名`，看 logcat 的 `SuanNIAO-file` 和后台日志的 📥。一个文件全程走开始时那条连接，断了算失败（电脑在会话结束时删掉 `.蒜鸟接收中` 临时文件）。
+  - 只连蓝牙：超过 1 MB 的照片用 `ImageDecoder`（认 EXIF 方向、HEIC）缩到长边 2048、JPEG 82；其他文件超过 3 MB 不发。
+  - 电脑：存到 `settings.receive.folder`（空 = `SHGetKnownFolderPath(FOLDERID_Downloads)\蒜鸟`；这台电脑的「下载」在 `E:\Downloads`），先写 `名字.蒜鸟接收中`，大小对上再改名，重名加「 (n)」；文件名去掉路径、保留名和非法字符。剩余空间少于文件 + 200 MB 拒收。
+  - 一批收完（`batch` 里 count 个都有结果）：`settings.receive.clipboard` 开着时，只有一张 jpg/png/bmp/webp 就解码（按 EXIF 转正，超过 4000 万像素放文件）放 32 位 `CF_DIB`（原图是 PNG 再放 `PNG` 格式），否则放 `CF_HDROP` + `Preferred DropEffect = 复制`；写完用 `clipsync::mark_own` 记下序号，不会被剪贴板同步发回手机。托盘气泡点了 `explorer /select`。
+  - 电脑设置页「接收文件」卡片：保存到（打开 / 更改…，`IFileOpenDialog` + `FOS_PICKFOLDERS`，选回默认位置就记成空）、收到后放进剪贴板。
 
 - 电脑端 0.7.13：设置行说明文字重叠 + 全界面说明精简。
   - 原因：Slint 1.18 里，ScrollView 内折行（`wrap: word-wrap`）文字的高度在窗口改宽度后不会跟着重算（先窄后宽、内容超出要滚动时能复现），`SettingRow` 的说明用的是折行的 `Muted`，行高按旧宽度算，文字盖到下一行。
@@ -14,8 +61,8 @@
   - 截图测试：`%TEMP%\sn-text\flow.ps1` 多了 `-Size "w,h"` 和步骤 `rW,H`（运行中改窗口大小）；复现用 `-Size "1500,1500" -Steps "w2000;r1900,1500;w1500;s"`。
 
 - 电脑端 0.7.12 / 手机端 0.9.11：动画顺滑 + 局域网审查出来的问题。
-  - **不要相机权限**：澎湃 OS 把声明了 `CAMERA` 的 App 归到「高刷新率应用 → 跟随应用内设置」（和相机、王者荣耀一类），powerkeeper 每次切到前台都投 `PRIORITY_MIUI_REFRESH_RATE` 最高 60 Hz 的票；`preferredDisplayModeId`、`requestedFrameRate` 都越不过它（`AppRequestObserver mIgnorePreferredRefreshRate: true`）。卸载重装、不请求刷新率都还是 60；只去掉相机权限（连 zxing-android-embedded 合并进来的）就是 120（菜单打开 21 → 40 帧）。所以清单里写了 `<uses-permission CAMERA tools:node="remove">`，扫码交给系统：`scanComputer()` 发 `miui.intent.action.scanbarcode` 给 `com.xiaomi.scanner`（`<queries>` 里声明了这个包，不然 Android 11+ 查不到），扫到的 `suanniao://pair?…` 由 MainActivity 的 VIEW intent-filter 接住（`handleLinkIntent`）。5 分钟内从蒜鸟发起的扫码直接绑定，别的来源（相机、浏览器）先弹「绑定这台电脑？」。没有扫一扫时提示用相机扫，或 `ACTION_GET_CONTENT` 选图、用 zxing core 认（`decodeQrImage`）。测试：`%TEMP%\sn-lan\scanflow.py`（生成带真配对码的二维码图片放进相册 → 扫一扫「相册」→ 只在那一格是黑白二维码时才点），跑两次都一次绑定成功。查刷新率：`settings get secure miui_refresh_rate`（蒜鸟在前台时）、`dumpsys display` 里 DisplayModeDirector 的 mVotes、`dumpsys activity service com.miui.powerkeeper` 的 `setScreenEffect pkg=… fps=`。
-  - 测动画：`dumpsys gfxinfo dev.suanniao reset` → 操作 → `dumpsys gfxinfo dev.suanniao framestats`，逐帧看 `IntendedVsync` 间隔（> 1.5 倍刷新周期就是丢了帧）、主线程晚开工多久（`HandleInputStart - IntendedVsync`）、排版 / 录制 / 出图各几毫秒。这些是在 60 Hz（每帧 16.7 ms）下调的；去掉相机权限后是 120 Hz（8.3 ms），见上一条。
+  - **相机权限和刷新率**：0.9.11 时实测声明了 `CAMERA` 就只有 60 Hz（当时以为澎湃 OS 把有相机权限的 App 归到「跟随应用内设置」），于是去掉了权限、扫码交给小米「扫一扫」。2026-10-30（0.9.15）复测推翻了：声明 + 授权 + 用 Camera2 真打开后摄，省电策略「智能限制」「无限制」下都是 120 Hz（`dumpsys display` 的 renderFrameRate、DisplayModeDirector 最新一条 `PRIORITY_MIUI_REFRESH_RATE` 最高 120）。当时的 60 Hz 多半是别的原因（那次同时在调动画、重装），没再复现。所以又改回 App 里直接扫：`scanComputer()` 没相机权限时先弹「扫码要用相机」说明（可「从相册选」），再 `IntentIntegrator(...).initiateScan()`（zxing-android-embedded 的 CaptureActivity，清单里改成 `fullSensor` 不强制横屏），结果在 `onActivityResult` 里 `parseActivityResult`。手机自带相机、「扫一扫」扫到的 `suanniao://pair?…` 照样由 VIEW intent-filter 接住（`handleLinkIntent`）：5 分钟内从蒜鸟发起的扫码直接绑定，别的来源先弹「绑定这台电脑？」；相册选图用 zxing core 认（`decodeQrImage`）。查刷新率：`dumpsys display` 里的 renderFrameRate 和 DisplayModeDirector 的 mVotes、`dumpsys activity service com.miui.powerkeeper` 的 `setScreenEffect pkg=… fps=`；复测用的临时包（加了 `--ei debugCamera 秒数` 打开后摄）在 `%TEMP%\sn-camtest`。
+  - 测动画：`dumpsys gfxinfo dev.suanniao reset` → 操作 → `dumpsys gfxinfo dev.suanniao framestats`，逐帧看 `IntendedVsync` 间隔（> 1.5 倍刷新周期就是丢了帧）、主线程晚开工多久（`HandleInputStart - IntendedVsync`）、排版 / 录制 / 出图各几毫秒。这些是在 60 Hz（每帧 16.7 ms）下调的；现在是 120 Hz（8.3 ms），见上一条。
   - 面板、对话框、教程（`Overlays.Modal.attach`）：进场分两步。第一帧放在起点（屏幕外、透明），搭建、排版、绘制、预先画好硬件图层都在这一帧做完，下一帧（`Choreographer.postFrameCallback`）才开始动画。进场没走完时 `refresh()` 不原地重建，等走完再建。
   - `Overlays.Sheet` 刷新不再 `removeAllViews` 重搭：`place()` 按「种类 + 标题 + 第几次出现」找旧的行，就地改小字、能不能点、开关状态和点了做什么（`RowParts` 挂在行的 tag 上）；只有增删的行才新建。行数变化用 `LayoutTransition`（进场后才开）。菜单的 body 关掉后留着（`overlays.sheet(menuBody)`），下次打开只更新：搭建 45~80 ms → 5~17 ms，点开关时主线程卡 80~100 ms 两次 → 没有超时帧。
   - 横幅（`expandBanner`）：以前每帧改横幅高度，整张网格每帧重排、重画，一帧 18~120 ms。现在只排一次版，网格用 `translationY` + `scaleY`（pivot 在顶上）从旧位置、大小动到新的；收起时先用变换动到终点，最后一帧才改布局。收起 p50 18 → 8 ms，p90 26 → 14 ms。

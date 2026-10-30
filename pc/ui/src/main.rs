@@ -20,6 +20,7 @@ mod win;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -35,6 +36,11 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, Vec
 use windows::Win32::System::SystemInformation::GetLocalTime;
 
 slint::include_modules!();
+
+/// 使用教程的页编号（和 app.slint 的 TutorialDialog 一样，不管走蓝牙还是局域网都固定）：
+/// 10 是托盘、开机自启那页，11 是最后一页「准备好了」
+const TUTORIAL_TRAY_PAGE: i32 = 10;
+const TUTORIAL_LAST_PAGE: i32 = 11;
 
 /// 界面上的编辑状态。
 struct App {
@@ -275,7 +281,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // `SuanNIAO.exe --tutorial 3` 打开教程的第几页（像从首页点开的），`--first-run` 是第一次打开时的样子，方便截图检查
     let mut args = std::env::args().skip_while(|a| a != "--tutorial").skip(1);
     if let Some(page) = args.next().and_then(|p| p.parse::<i32>().ok()) {
-        ui.set_tutorial_start(page.clamp(0, 8));
+        ui.set_tutorial_start(page.clamp(0, TUTORIAL_LAST_PAGE));
         ui.set_tutorial_open(true);
     } else if std::env::args().any(|a| a == "--first-run")
         || (!ui_flag("tutorialSeen") && !ctx.autostart_asked.get() && !win::autostart_enabled())
@@ -521,6 +527,8 @@ fn wire(ui: &AppWindow, ctx: &Rc<Ctx>) {
     bind!(on_export_backup, | | export_backup);
     bind!(on_import_config, | | import_config);
     bind!(on_open_logs, | | open_logs);
+    bind!(on_open_receive_folder, | | open_receive_folder);
+    bind!(on_pick_receive_folder, | | pick_receive_folder);
 }
 
 fn kind_index(kind: ModuleKind) -> i32 {
@@ -792,7 +800,7 @@ fn settings_diff(a: &Settings, b: &Settings) -> Option<(&'static str, &'static s
     let (t1, t2) = (&a.touchpad, &b.touchpad);
     let (v1, v2) = (&a.voice, &b.voice);
     let (k1, k2) = (&a.triggers, &b.triggers);
-    let fields: [(bool, &str, &str); 17] = [
+    let fields: [(bool, &str, &str); 18] = [
         (t1.sensitivity != t2.sensitivity, "sensitivity", "指针速度"),
         (t1.acceleration != t2.acceleration, "acceleration", "指针加速"),
         (t1.scroll_speed != t2.scroll_speed, "scroll", "滚动速度"),
@@ -803,6 +811,7 @@ fn settings_diff(a: &Settings, b: &Settings) -> Option<(&'static str, &'static s
         (v1.enter_after != v2.enter_after, "enter-after", "发送后自动按回车"),
         (v1.paste != v2.paste, "paste", "文字上屏方式"),
         (a.clipboard_sync != b.clipboard_sync, "clip-sync", "和手机同步剪贴板"),
+        (a.receive.clipboard != b.receive.clipboard, "receive-clip", "收到后放进剪贴板"),
         (k1.double_click_ms != k2.double_click_ms, "double", "双击间隔"),
         (k1.long_press_ms != k2.long_press_ms, "long", "长按时间"),
         (k1.repeat_delay_ms != k2.repeat_delay_ms, "repeat-delay", "连发延迟"),
@@ -1320,6 +1329,8 @@ impl Ctx {
         ui.set_enter_after(s.voice.enter_after);
         ui.set_input_mode(if s.voice.paste { 1 } else { 0 });
         ui.set_clip_sync(s.clipboard_sync);
+        ui.set_receive_folder(s.receive.folder_in(&win::downloads_dir()).display().to_string().into());
+        ui.set_receive_clip(s.receive.clipboard);
         ui.set_double_click_ms(s.triggers.double_click_ms as i32);
         ui.set_long_press_ms(s.triggers.long_press_ms as i32);
         ui.set_repeat_delay_ms(s.triggers.repeat_delay_ms as i32);
@@ -1446,8 +1457,7 @@ impl Ctx {
         };
         let (paired, paired_note) = match &state {
             Some(s) if !s.phones.is_empty() => (1, format!("配对过的手机：{}", s.phones.join("、"))),
-            Some(s) if s.paired > 0 => (0, "配对过的设备里没有手机：在蓝牙设置里「添加设备」".to_string()),
-            Some(_) => (0, "在蓝牙设置里「添加设备」，选你的手机".to_string()),
+            Some(_) => (0, "可以扫码配对，或在蓝牙设置里添加手机".to_string()),
             None => (-1, String::new()),
         };
         ui.set_check_bluetooth(bt);
@@ -1498,10 +1508,10 @@ impl Ctx {
         win::open_path(std::path::Path::new("ms-settings:bluetooth"));
     }
 
-    /// 使用教程关掉了：记下看过，以后不再自动打开。翻到过开机自启那页（第 7 页）就算问过开机自启，首页不再问
+    /// 使用教程关掉了：记下看过，以后不再自动打开。翻到过开机自启那页（托盘页）就算问过开机自启，首页不再问
     fn tutorial_closed(self: &Rc<Self>, furthest: i32) {
         save_ui_flag("tutorialSeen");
-        if furthest >= 7 && !self.autostart_asked.get() {
+        if furthest >= TUTORIAL_TRAY_PAGE && !self.autostart_asked.get() {
             self.autostart_asked.set(true);
             save_ui_flag("autostartAsked");
         }
@@ -1519,6 +1529,44 @@ impl Ctx {
     fn open_folder(self: &Rc<Self>) {
         let _ = std::fs::create_dir_all(config::data_dir());
         win::open_path(&config::data_dir());
+    }
+
+    /// 手机发来的文件存在的文件夹（还没收过文件时先建好）
+    fn receive_folder(&self) -> PathBuf {
+        self.app.borrow().config.settings.receive.folder_in(&win::downloads_dir())
+    }
+
+    fn open_receive_folder(self: &Rc<Self>) {
+        let dir = self.receive_folder();
+        if std::fs::create_dir_all(&dir).is_err() {
+            self.toast(&format!("打不开 {}：建不了这个文件夹", dir.display()));
+            return;
+        }
+        win::open_path(&dir);
+    }
+
+    /// 换一个文件夹存手机发来的文件（可以撤销）。选的就是默认位置的话记成空：以后「下载」挪了位置也跟着走
+    fn pick_receive_folder(self: &Rc<Self>) {
+        win::file_dialog(win::FileDialog::Folder(self.receive_folder()), |path| {
+            with_ctx(|ctx| {
+                if let Some(path) = path {
+                    ctx.receive_folder_picked(path);
+                }
+            })
+        });
+    }
+
+    fn receive_folder_picked(self: &Rc<Self>, path: String) {
+        let default = config::ReceiveSettings::default().folder_in(&win::downloads_dir());
+        let folder = if win::same_dir(Path::new(&path), &default) { String::new() } else { path.clone() };
+        if self.app.borrow().config.settings.receive.folder == folder {
+            return;
+        }
+        self.checkpoint(None, "改接收文件的文件夹");
+        self.app.borrow_mut().config.settings.receive.folder = folder;
+        self.refresh_settings();
+        self.schedule_save();
+        self.toast(&format!("手机发来的文件以后存到 {path}"));
     }
 
     /// 首页的问题：开机时自动启动后台？回答过就不再问（存在 ui.json）
@@ -2526,6 +2574,7 @@ impl Ctx {
             s.voice.enter_after = ui.get_enter_after();
             s.voice.paste = ui.get_input_mode() == 1;
             s.clipboard_sync = ui.get_clip_sync();
+            s.receive.clipboard = ui.get_receive_clip();
             s.triggers.double_click_ms = ui.get_double_click_ms().max(100) as u32;
             s.triggers.long_press_ms = ui.get_long_press_ms().max(200) as u32;
             s.triggers.repeat_delay_ms = ui.get_repeat_delay_ms().clamp(150, 1000) as u32;

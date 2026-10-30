@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 打开扫码界面：整屏淡入（遮罩、四个角、按钮的动画在 ScanActivity 里画） -->
+<alpha xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="160"
+    android:fromAlpha="0"
+    android:toAlpha="1"
+    android:interpolator="@android:interpolator/decelerate_cubic" />

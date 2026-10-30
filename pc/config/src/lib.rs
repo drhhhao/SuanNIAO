@@ -338,8 +338,36 @@ pub struct Settings {
     pub autostart: bool,
     /// 和手机同步剪贴板里的文字：手机上复制的，回到蒜鸟时传给电脑；电脑上复制的，传给手机
     pub clipboard_sync: bool,
+    /// 手机发来的文件
+    pub receive: ReceiveSettings,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReceiveSettings {
+    /// 存到哪个文件夹；空 = 「下载」里的「蒜鸟」（见 receive_folder）
+    pub folder: String,
+    /// 收完放进电脑剪贴板：一张图片放图片（直接粘进对话框），别的放文件（粘进文件夹、聊天软件）
+    pub clipboard: bool,
+}
+
+impl Default for ReceiveSettings {
+    fn default() -> Self {
+        Self { folder: String::new(), clipboard: true }
+    }
+}
+
+impl ReceiveSettings {
+    /// 实际存到的文件夹。downloads：系统里「下载」文件夹的位置（可能被挪到了别的盘）
+    pub fn folder_in(&self, downloads: &Path) -> PathBuf {
+        if self.folder.trim().is_empty() {
+            downloads.join("蒜鸟")
+        } else {
+            PathBuf::from(self.folder.trim())
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -402,6 +430,7 @@ impl Default for Settings {
             triggers: TriggerSettings::default(),
             autostart: false,
             clipboard_sync: true,
+            receive: ReceiveSettings::default(),
             extra: Map::new(),
         }
     }
@@ -767,6 +796,11 @@ pub struct LanStatus {
     /// 刚用扫码绑定上的手机名（界面看到就关掉二维码、提示一声），和时刻
     pub just_paired: String,
     pub just_paired_at: u64,
+    /// 刚绑定上走的哪种连接："lan" 局域网、"bt" 扫码蓝牙配对
+    pub just_paired_via: String,
+    /// 二维码开着时这台电脑的蓝牙地址（放进二维码，手机扫到就对这个地址发起配对，配对码兼当口令）；
+    /// 没开二维码、电脑没有蓝牙是空的
+    pub bt_addr: String,
     pub phones: Vec<LanPhone>,
     /// 开不起来的原因（端口被占、证书读不出来之类）
     pub error: String,

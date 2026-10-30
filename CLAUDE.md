@@ -3,7 +3,7 @@
 ## 名字
 
 - 项目叫 SuanNIAO（蒜鸟），用户不要再看到 PhonePad：电脑端 `SuanNIAO.exe` + `SuanNIAO-core.exe`，数据文件夹 `%APPDATA%\SuanNIAO`，手机包名 `dev.suanniao`，发版文件 `SuanNIAO-PC-版本-Setup.exe`、`SuanNIAO-Android-版本.apk`。
-- 手机端不要声明相机权限（`CAMERA`）：澎湃 OS 会因此把蒜鸟限制在 60 Hz。扫码交给系统的「扫一扫」/ 相机（`suanniao://pair` 链接回到蒜鸟），见 DEVELOPMENT.md。
+- 手机端扫码在蒜鸟里直接扫（zxing-android-embedded，要相机权限）。以前认为声明 `CAMERA` 会让澎湃 OS 把蒜鸟限在 60 Hz，2026-10-30 在小米 13 上复测：声明、授权、真打开相机都还是 120 Hz（见 DEVELOPMENT.md）。以后加相机相关的东西，改完照那里的办法测一下刷新率。
 - 新加的名字（文件、互斥量、窗口类、环境变量、临时文件）都用 SuanNIAO / suanniao。PhonePad、phonepad 只留在认改名前文件和换掉旧版的代码里（`LEGACY_*`、`move_legacy_*`、`phonepad/1`、`phonepad-backup`）。
 - 手机包名定了就不能再改：改了系统当成另一个 App，别人手机上的旧版升级不上来。
 - 电脑端安装程序的 `AppId`（`pc/ui/src/setup.rs` 的 `APP_ID`，和 0.7.6 的 Inno Setup 安装包一样）也不能改：Windows 靠它认出装过的蒜鸟，改了新版就装成另一个程序、卸载不掉旧的。
@@ -23,6 +23,13 @@
 - 只发最新的版本（用户 2026-10-30 要求）：本机部署过、没发布的中间版本不单独留一段。发版前把它们合并成最新版本的一段，按功能总结相对上一个发布版本的变化；中间加了又改掉的、修的是这次新功能里的问题，都不写。
 - 技术细节写在 `DEVELOPMENT.md` 的「当前版本」下面，和 `CHANGELOG.md` 不冲突。
 - `README.md` 是给用的人看的（这个项目干什么、功能、下载安装、使用教程、常见问题），不写技术细节；功能或用法变了要跟着改（用户 2026-10-30 要求）。
+
+## 教程
+
+- 两端都有使用教程：手机 `Tutorial.kt`，电脑 `app.slint` 的 `TutorialDialog`。
+- 加了重大功能（比如新的连接方式、新的入口、改了用法）以后，要核对两端教程和 README 使用说明跟现在的应用有没有出入；有就重新规划教程（用户 2026-10-30 要求）。
+- 改教程也要先打板：效果图放在 `xiaomi13\教程打板\<主题>\`，用户确定了样子再改代码、加版本号。
+- 核查和打板可以交给专门的子代理 `suanniao-tutorial`（定义在 `~/.claude/agents/suanniao-tutorial.md`）。
 
 ## GitHub 和发版
 

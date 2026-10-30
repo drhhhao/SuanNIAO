@@ -1,6 +1,6 @@
 [package]
 name = "suanniao-core"
-version = "0.7.13"
+version = "0.7.20"
 edition = "2021"
 description = "蒜鸟电脑端后台：托盘常驻、蓝牙串口服务、执行按键映射"
 
@@ -15,7 +15,7 @@ suanniao-update = { path = "../update" }
 suanniao-lan = { path = "../lan" }
 serde_json = "1"
 # 电脑上复制的图片同步给手机（clipimage.rs）：读剪贴板里的位图，编成 PNG / JPEG。界面的 slint 本来就带着它
-image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
 base64 = "0.22"
 
 [dependencies.windows]
@@ -23,9 +23,11 @@ version = "0.62"
 features = [
     "Foundation",
     "Foundation_Collections",
+    "Devices_Bluetooth",
     "Devices_Bluetooth_Rfcomm",
     "Networking_Sockets",
     "Storage_Streams",
+    "Win32_Devices_Bluetooth",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",

@@ -9,7 +9,7 @@
 //!   和上一次同步的一样、超过 MAX_BYTES 的。手机发来的写进剪贴板以后记下序号，因此变的那一次不发回去。
 
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -30,8 +30,26 @@ use crate::{clipboard, clipimage, link, log, state};
 /// 一次最多同步这么多（UTF-8 字节）：再长的多半不是要粘的字，蓝牙上也要传好一会儿
 pub const MAX_BYTES: usize = 256 << 10;
 
-/// 手机发来的文字写进剪贴板以后的序号
+/// 自己写进剪贴板（手机发来的文字、手机发来的文件）以后的序号
 static OWN_SEQ: AtomicU32 = AtomicU32::new(0);
+/// 正在往剪贴板里写自己的东西：剪贴板通知可能比写完、记下序号来得早，这期间的变化也不发回手机
+static WRITING: AtomicBool = AtomicBool::new(false);
+
+/// 往剪贴板里写自己的东西（write 返回写完以后的序号）：这次变化不发回手机
+pub fn write_own(write: impl FnOnce() -> Option<u32>) -> Option<u32> {
+    WRITING.store(true, Ordering::SeqCst);
+    let seq = write();
+    if let Some(seq) = seq {
+        OWN_SEQ.store(seq, Ordering::SeqCst);
+    }
+    WRITING.store(false, Ordering::SeqCst);
+    seq
+}
+
+/// 剪贴板这次的变化是自己写的
+fn own_change() -> bool {
+    WRITING.load(Ordering::SeqCst) || clipboard::sequence() == OWN_SEQ.load(Ordering::SeqCst)
+}
 /// 上一次同步的文字（发出去的或者收到的）
 static LAST: Mutex<String> = Mutex::new(String::new());
 /// 图片编好以后最多这么大，再大就编成 JPEG、缩小：小米 13 实测蓝牙上约 55 KB/s，512 KB 要传 9 秒左右
@@ -95,7 +113,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
 
 /// 电脑上剪贴板变了：能同步的文字、图片发给手机
 fn on_update() {
-    if clipboard::sequence() == OWN_SEQ.load(Ordering::Relaxed) || !enabled() || !state::status().connected {
+    if own_change() || !enabled() || !state::status().connected {
         return;
     }
     match clipboard::shareable() {
@@ -146,6 +164,9 @@ fn send_text(text: String) {
 
 /// 新的图片：同一张（一次复制常常来两三次剪贴板通知）不重发，也不打断正在传的
 fn start_image(image: Shared) {
+    if own_change() {
+        return; // 等一等再读的那条路：读到的是自己刚写进去的（手机发来的图片）
+    }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     match &image {
         Shared::Png(bytes) | Shared::Dib(bytes) => bytes.hash(&mut hasher),
@@ -219,11 +240,11 @@ pub fn from_phone(text: &str) {
     if clipboard::shareable_text().as_deref() == Some(text) {
         return; // 电脑上已经是这段了
     }
-    match clipboard::set_text(text) {
-        Some(seq) => {
-            OWN_SEQ.store(seq, Ordering::Relaxed);
+    match write_own(|| clipboard::set_text(text)) {
+        Some(_) => {
             log!("📋 手机上复制的 {} 字已放进电脑剪贴板：{}", text.chars().count(), preview(text));
         }
         None => log!("⚠ 手机发来的剪贴板没放进去：剪贴板被别的程序占着"),
     }
 }
+

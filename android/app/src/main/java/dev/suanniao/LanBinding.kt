@@ -76,8 +76,12 @@ data class LanBinding(
     }
 }
 
-/** 电脑上二维码里的内容：suanniao://pair?v=1&pc=…&n=电脑名&a=地址1,地址2&p=端口&fp=指纹&c=一次性配对码 */
-data class LanQr(val pc: String, val name: String, val addrs: List<String>, val port: Int, val fp: String, val code: String) {
+/**
+ * 电脑上二维码里的内容：suanniao://pair?v=1&pc=…&n=电脑名&a=地址1,地址2&p=端口&fp=指纹&c=一次性配对码&bt=蓝牙地址
+ * - a、p：局域网连这里（电脑没连网时 a 是空的，只能蓝牙配对）
+ * - bt：电脑的蓝牙地址，扫码蓝牙配对对它发起（见 BtPair），c 兼当口令；电脑没有蓝牙、旧版电脑端没有
+ */
+data class LanQr(val pc: String, val name: String, val addrs: List<String>, val port: Int, val fp: String, val code: String, val bt: String? = null) {
     companion object {
         fun parse(text: String?): LanQr? {
             val uri = runCatching { Uri.parse(text?.trim() ?: return null) }.getOrNull() ?: return null
@@ -85,13 +89,16 @@ data class LanQr(val pc: String, val name: String, val addrs: List<String>, val 
             if ((uri.getQueryParameter("v") ?: return null) != "1") return null
             val addrs = uri.getQueryParameter("a")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: return null
             val port = uri.getQueryParameter("p")?.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+            val bt = BtPair.validAddress(uri.getQueryParameter("bt"))
+            if (addrs.isEmpty() && bt == null) return null
             return LanQr(
                 pc = uri.getQueryParameter("pc")?.takeIf { it.isNotBlank() } ?: return null,
                 name = uri.getQueryParameter("n").orEmpty().ifBlank { "电脑" },
-                addrs = addrs.ifEmpty { return null },
+                addrs = addrs,
                 port = port,
                 fp = uri.getQueryParameter("fp")?.takeIf { it.isNotBlank() } ?: return null,
                 code = uri.getQueryParameter("c")?.takeIf { it.isNotBlank() } ?: return null,
+                bt = bt,
             )
         }
     }

@@ -7,9 +7,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod btpair;
 mod clipboard;
 mod clipimage;
 mod clipsync;
+mod filerecv;
 mod input;
 mod lan;
 mod launcher;
