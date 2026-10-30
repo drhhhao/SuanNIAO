@@ -3,7 +3,7 @@
 # 手机端每一版有两个：完整安装包（带语音模型，第一次装用）和不带模型的更新包（-update.apk，App 里更新用）。
 # Release 里还有一个 latest.json（两端的版本号、下载地址、大小、SHA-256、更新说明）和它的签名 latest.json.sig：
 # 两端的蒜鸟读 releases/latest/download/latest.json 看有没有新版本（pc/update、android Updater.kt）。
-# 发完在本机跑 python tools/gitee-upload.py 同步一份到 Gitee（国内快，两端先找那边）：GitHub 的机器在国外，
+# 推完就在本机跑 python tools/gitee-upload.py（等这里发完）同步一份到 Gitee（国内快，两端先找那边）：GitHub 的机器在国外，
 # 从这里往 Gitee 传一百多 MB 半小时都传不完（2026-10-31），所以不在这里传。
 # 也可以在仓库网页的 Actions → 发版 → Run workflow 手动跑一遍（同样只在版本号是新的时候发）。
 name: 发版

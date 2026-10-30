@@ -1,5 +1,8 @@
 """发版后在本机把这一版传到 Gitee（国内镜像）：python tools/gitee-upload.py [发布名]
 
+推到 main 以后马上跑就行：不写发布名就按本机代码里的版本号（pc/ui/Cargo.toml、build.gradle.kts）算出发布名，
+GitHub 上还没发布完就每 30 秒看一次，等到 latest.json 传上去再开始（最多等 45 分钟）。
+
 GitHub 的机器在国外，从那边往 Gitee 传一百多 MB 半小时都传不完（2026-10-31），所以改成发版后在本机传。
 做的事：用 gh 把 GitHub 上这一版（不写发布名就是最新一版）的安装包、latest.json 和签名下到临时文件夹，
 核对大小和 SHA-256，再交给 .github/gitee-sync.py 传到 Gitee、读回核对、删掉旧的发行版。
@@ -14,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GH_REPO = "drhhhao/SuanNIAO"
@@ -26,11 +30,37 @@ def gh(*args):
     return subprocess.run([GH, *args, "--repo", GH_REPO], check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
+def local_tag():
+    """本机代码里的版本号拼出的发布名，和 release.yml 的算法一样"""
+    def find(path, key):
+        for line in open(os.path.join(ROOT, path), encoding="utf-8"):
+            line = line.strip()
+            if line.startswith(key):
+                return line.split('"')[1]
+        sys.exit(f"{path} 里找不到 {key}")
+    return f"pc{find('pc/ui/Cargo.toml', 'version =')}-android{find('android/app/build.gradle.kts', 'versionName =')}"
+
+
+def wait_for(tag):
+    """等 GitHub 把这一版发布完（latest.json 是最后传的）"""
+    deadline = time.time() + 45 * 60
+    while True:
+        result = subprocess.run([GH, "release", "view", tag, "--repo", GH_REPO, "--json", "assets", "-q", ".assets[].name"],
+                                capture_output=True, text=True, encoding="utf-8")
+        if result.returncode == 0 and "latest.json" in result.stdout.split():
+            return
+        if time.time() > deadline:
+            sys.exit(f"等了 45 分钟 GitHub 上还没有 {tag}：去 Actions 页面看看发版是不是失败了")
+        print(f"GitHub 上还没发布完 {tag}，30 秒后再看…", flush=True)
+        time.sleep(30)
+
+
 def main():
     token = os.environ.get("GITEE_TOKEN") or (open(TOKEN_FILE, encoding="utf-8").read().strip() if os.path.exists(TOKEN_FILE) else "")
     if not token:
         sys.exit(f"没有 Gitee 令牌：放到 {TOKEN_FILE}，或者设环境变量 GITEE_TOKEN")
-    tag = sys.argv[1] if len(sys.argv) > 1 else json.loads(gh("release", "view", "--json", "tagName"))["tagName"]
+    tag = sys.argv[1] if len(sys.argv) > 1 else local_tag()
+    wait_for(tag)
     work = tempfile.mkdtemp(prefix="suanniao-gitee-")
     dist = os.path.join(work, "dist")
     print(f"从 GitHub 下载 {tag} …")

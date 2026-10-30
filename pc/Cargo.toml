@@ -2,12 +2,13 @@
 members = ["config", "core", "lan", "setup", "ui", "update"]
 resolver = "2"
 
+# 不做 LTO、codegen-units 用默认的 16：2026-10-31 本机实测编自己的几个包 302 秒 → 152 秒
+# （GitHub 上电脑端编译约 9.5 分钟的大头），安装包只大 0.5 MB（11.6 → 12.2 MB）。
+# thin LTO 反而更慢更大（186 秒、12.8 MB）
 [profile.release]
-lto = true
-codegen-units = 1
 strip = true
 
-# 开发时截图检查用：和 release 一样优化，但不做 LTO、可以增量编译，编得快
+# 开发时截图检查用：和 release 一样优化，但可以增量编译、不去符号，改一点再编很快
 [profile.fastrel]
 inherits = "release"
 lto = false
