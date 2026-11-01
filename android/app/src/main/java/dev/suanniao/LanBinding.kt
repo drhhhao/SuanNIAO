@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 扫码绑定的那台电脑（局域网连接用）。存在偏好里，令牌用 Android Keystore 加密后再存（见 LanSecure.seal）。
+ * 扫码绑定的一台电脑（局域网连接用）。存在 Computers 那台电脑的项里，令牌用 Android Keystore 加密后再存（见 LanSecure.seal）。
  * - pc：电脑编号；fp：电脑证书指纹，连的时候核对，不对就不连（防冒充）
  * - addrs、port：电脑的地址，电脑连着时地址变了会发 lan 消息来更新；lastAddr 是上次连上的那个，下次先试它
  * - phoneId、token：电脑发给这部手机的编号和长期令牌
@@ -31,48 +31,30 @@ data class LanBinding(
         .put("phoneId", phoneId).put("token", sealedToken).put("lastAddr", lastAddr).put("revoked", revoked)
 
     companion object {
+        /** 旧版单独存绑定的偏好（现在存在 Computers 里，只迁移时读） */
         const val KEY = "lan_binding"
 
-        fun load(context: Context): LanBinding? {
-            val text = context.getSharedPreferences(LinkService.PREFS, Context.MODE_PRIVATE).getString(KEY, null) ?: return null
-            return runCatching {
-                val o = JSONObject(text)
-                val list = o.getJSONArray("addrs")
-                LanBinding(
-                    pc = o.getString("pc"),
-                    name = o.optString("name"),
-                    addrs = (0 until list.length()).map { list.getString(it) },
-                    port = o.getInt("port"),
-                    fp = o.getString("fp"),
-                    phoneId = o.getString("phoneId"),
-                    sealedToken = o.getString("token"),
-                    lastAddr = if (o.isNull("lastAddr")) null else o.optString("lastAddr").ifBlank { null },
-                    revoked = o.optBoolean("revoked", false),
-                )
-            }.getOrNull()
-        }
+        fun fromJson(o: JSONObject): LanBinding? = runCatching {
+            val list = o.getJSONArray("addrs")
+            LanBinding(
+                pc = o.getString("pc"),
+                name = o.optString("name"),
+                addrs = (0 until list.length()).map { list.getString(it) },
+                port = o.getInt("port"),
+                fp = o.getString("fp"),
+                phoneId = o.getString("phoneId"),
+                sealedToken = o.getString("token"),
+                lastAddr = if (o.isNull("lastAddr")) null else o.optString("lastAddr").ifBlank { null },
+                revoked = o.optBoolean("revoked", false),
+            )
+        }.getOrNull()
 
-        fun save(context: Context, binding: LanBinding?) {
-            update(context) { binding }
-        }
-
-        private val lock = Any()
-
-        /**
-         * 读出现在存着的、改一下、存回去，中间别的线程插不进来。连接线程、扫码配对、解除绑定、电脑发来新地址
-         * 都会改它：各自拿着早先读到的旧值去存，会把别人刚存的新绑定冲掉
-         */
-        fun update(context: Context, change: (LanBinding?) -> LanBinding?) = synchronized(lock) {
-            val next = change(load(context))
-            val prefs = context.getSharedPreferences(LinkService.PREFS, Context.MODE_PRIVATE).edit()
-            if (next == null) prefs.remove(KEY) else prefs.putString(KEY, next.toJson().toString())
-            prefs.apply()
-        }
+        /** 正在用的那台电脑的局域网绑定（见 Computers） */
+        fun load(context: Context): LanBinding? = Computers.current(context)?.lan
 
         /** 只改同一次绑定（电脑和手机编号都没变）：期间重新扫了码、解除了绑定，就什么都不做 */
-        fun updateIfSame(context: Context, binding: LanBinding, change: (LanBinding) -> LanBinding) = update(context) { cur ->
-            if (cur != null && cur.pc == binding.pc && cur.phoneId == binding.phoneId) change(cur) else cur
-        }
+        fun updateIfSame(context: Context, binding: LanBinding, change: (LanBinding) -> LanBinding) =
+            Computers.updateLan(context, binding.pc) { cur -> if (cur != null && cur.phoneId == binding.phoneId) change(cur) else cur }
     }
 }
 

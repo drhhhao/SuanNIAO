@@ -2127,7 +2127,7 @@ component HomePage inherits Page {
                             text: "· 电脑：打开蓝牙；没配对就点「扫码配对」让手机扫。";
                         }
                         Muted {
-                            text: "· 手机：打开蒜鸟，右上角「···」→「选择电脑」。";
+                            text: "· 手机：点顶上的电脑名，切到这台电脑。";
                         }
                         Muted {
                             text: "· 局域网：两边连同一个网络；还不行就重新扫码。";
@@ -3446,7 +3446,7 @@ component LanDialog inherits DialogCard {
             font-weight: 700;
         }
         WrapText {
-            text: "手机蒜鸟里点右上角「···」→「扫码连接电脑」，扫下面的码。";
+            text: "手机蒜鸟里点顶上的「＋ 添加电脑」或电脑名 →「扫码连接电脑」，扫下面的码。";
             color: Theme.fg2;
             font-size: 13px;
         }
@@ -8476,7 +8476,7 @@ component ScanPairStage inherits Stage {
     }
 }
 
-// 「第 3 步」的插图：手机上打开「选择电脑」，点这台电脑，顶上显示「已连接」
+// 「第 3 步」的插图：手机上打开「手机蓝牙选择」，点这台电脑，顶上显示「已连接」
 component PickStage inherits Stage {
     in property <string> computer;
     property <float> t: Math.mod(root.since, 5400);
@@ -8486,7 +8486,7 @@ component PickStage inherits Stage {
     property <length> phone-y: (root.height - root.phone-h) / 2 - 6px;
     property <length> scr-w: root.phone-w - 10px;
     property <length> scr-h: root.phone-h - 10px;
-    // 「选择电脑」：从底下浮上来，选好了沉下去
+    // 「手机蓝牙选择」：从底下浮上来，选好了沉下去
     property <float> sheet: Tween.decel(Tween.seg(root.t, 250, 800)) * (1 - Tween.smooth(Tween.seg(root.t, 2350, 2800)));
     property <length> card-h: 200px;
     property <length> card-y: root.scr-h - 8px - root.card-h + (1 - root.sheet) * 28px;
@@ -8554,7 +8554,7 @@ component PickStage inherits Stage {
             background: #000000.with-alpha(0.3 * root.sheet);
             visible: root.sheet > 0;
         }
-        // 「选择电脑」
+        // 「手机蓝牙选择」
         Rectangle {
             x: 6px;
             y: root.card-y;
@@ -8575,7 +8575,7 @@ component PickStage inherits Stage {
             Text {
                 x: 14px;
                 y: 18px;
-                text: "选择电脑";
+                text: "手机蓝牙选择";
                 color: Theme.phone-fg;
                 font-size: 12.5px;
                 font-weight: 700;
@@ -10180,7 +10180,7 @@ component TutorialDialog inherits Rectangle {
                     }
                     TutStep {
                         number: "2";
-                        text: "手机：打开蒜鸟，点「···」→「选择电脑」→「扫码配对新电脑」，对准二维码。";
+                        text: "手机：打开蒜鸟，点顶上的「＋ 添加电脑」（已有电脑就点电脑名 →「扫码连接电脑」），对准二维码。";
                     }
                     TutStep {
                         number: "3";
@@ -10292,7 +10292,7 @@ component TutorialDialog inherits Rectangle {
                     eyebrow: "连接手机 · 第 4 步";
                     title: "在手机上选这台电脑";
                     TutText {
-                        text: "打开手机上的蒜鸟，在「选择电脑」里点这台电脑：";
+                        text: "打开手机上的蒜鸟，点顶上的电脑名 →「手机蓝牙选择」，点这台电脑：";
                     }
                     TutBox {
                         HorizontalLayout {
@@ -10359,7 +10359,7 @@ component TutorialDialog inherits Rectangle {
                     }
                     TutStep {
                         number: "2";
-                        text: "手机：打开蒜鸟，点右上角「···」→「扫码连接电脑」，对准二维码。";
+                        text: "手机：打开蒜鸟，点顶上的「＋ 添加电脑」（已有电脑就点电脑名 →「扫码连接电脑」），对准二维码。";
                     }
                     TutBox {
                         CheckRow {
@@ -10725,7 +10725,7 @@ export component AppWindow inherits Window {
     in-out property <bool> tutorial-open;
     in-out property <bool> tutorial-first-run;
     in-out property <int> tutorial-start;
-    // 这台电脑在蓝牙里的名字（手机的「选择电脑」里列的就是它）
+    // 这台电脑在蓝牙里的名字（手机的「手机蓝牙选择」里列的就是它）
     in property <string> computer-name: "这台电脑";
     callback open-bluetooth-settings();
     // 教程里点「重新检查」：马上查一遍蓝牙和配对

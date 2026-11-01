@@ -147,6 +147,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private var pendingConfig: JSONObject? = null
     /** 没连上时调好的布局：存在手机上，连上后自动发给电脑；在那之前盖在电脑的配置上显示 */
     private var pendingLayout: JSONObject? = null
+    /** pendingLayout 是给哪台电脑调的（Computers 的编号）：切到别的电脑时不发、也不盖上去 */
+    private var pendingLayoutPc: String? = null
+    private fun pendingLayoutHere(): JSONObject? = pendingLayout?.takeIf { pendingLayoutPc == null || pendingLayoutPc == Computers.load(this).current }
     private var layoutInFlight = false
     private val saveTimeout = Runnable {
         if (saving) {
@@ -173,6 +176,20 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private val clearDetail = Runnable { detailPinned = false; showBase(animate = true) }
 
     private var menuSheet: Overlays.Sheet? = null
+    /** 顶栏「蒜鸟」旁边的电脑按钮、「切换电脑」面板（见 ComputerSwitcher） */
+    private lateinit var pcButton: PcButton
+    private lateinit var switcher: ComputerSwitcher
+    /** 刚点了切换：切到的那台、切换前那台的编号。连上了说一声；8 秒没连上给「换回」 */
+    private var switching: Pair<Computer, String?>? = null
+    private val switchTimeout = Runnable {
+        val (pc, prev) = switching ?: return@Runnable
+        switching = null
+        if (connected) return@Runnable
+        val back = prev?.let { id -> Computers.load(this).byId(id) }
+        if (back != null) overlays.notice("没连上「${pc.name}」", "换回", ms = 6000) { switchTo(back) }
+        else overlays.notice("没连上「${pc.name}」", ms = 4000)
+    }
+    private val computersChanged: () -> Unit = { main.post { onComputersChanged() } }
     /** 菜单关掉后留着的那些行，下次打开接着用 */
     private var menuBody: LinearLayout? = null
     private var pendingSheet: Overlays.Sheet? = null
@@ -206,8 +223,11 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         applySystemBars()
         prefs.getString(LinkService.KEY_CONFIG, null)?.let { cached -> runCatching { JSONObject(cached) }.getOrNull()?.let { config = it } }
         pendingLayout = prefs.getString(KEY_PENDING_LAYOUT, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        pendingLayoutPc = prefs.getString(KEY_PENDING_LAYOUT_PC, null)
         pageIndex = prefs.getInt(KEY_PAGE, 0)
         applyConfig(force = true)
+        Computers.listen(computersChanged)
+        updatePcButton()
         if (savedAddress() == null && !setup.tutorialSeen) main.post { setup.showOnboarding() }
         handleDebugIntent(intent)
         handleLinkIntent(intent)
@@ -257,6 +277,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     }
 
     override fun onDestroy() {
+        Computers.unlisten(computersChanged)
+        main.removeCallbacks(switchTimeout)
         btPair.cancel()
         reusable.values.forEach { (it as? VoiceButton)?.release() }
         updater.detach()
@@ -381,12 +403,18 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", pkg, null))) }
     }
 
-    override fun savedAddress(): String? = prefs.getString(LinkService.KEY_ADDRESS, null)
+    /** 正在用的那台电脑的蓝牙地址（只连局域网的电脑没有） */
+    override fun savedAddress(): String? = Computers.current(this)?.bt
 
-    override fun savedName(): String? = prefs.getString(KEY_PC_NAME, null)
+    override fun savedName(): String? = Computers.current(this)?.name
 
+    /** 从蓝牙列表里选了一台：切到它（「我的电脑」里没有就加上） */
     override fun chooseComputer(address: String, name: String) {
-        prefs.edit().putString(LinkService.KEY_ADDRESS, address).putString(KEY_PC_NAME, name).apply()
+        Computers.selectBt(this, address, name)
+        afterChoose(address, name)
+    }
+
+    private fun afterChoose(address: String, name: String) {
         if (setup.onboardingOpen) {
             setup.refreshOnboarding()
         } else {
@@ -653,7 +681,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             }
             link?.setBtPairCode(address, qr.code) ?: LinkService.saveBtPairCode(this, address, qr.code)
             Ui.buzz(root, Ui.Buzz.TAP)
-            chooseComputer(address, qr.name)
+            Computers.attachBt(this, qr.pc, qr.name, address)
+            afterChoose(address, qr.name)
             // 教程开着时 chooseComputer 不连；这里一定要马上连上去交口令，不然电脑 2 分钟后删掉这次配对
             startLinkIfReady(address)
             link?.retryNow() // 等配对时连接线程在歇着，马上叫醒
@@ -720,28 +749,6 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             else -> return
         }
         prefs.edit().putLong(KEY_SLOW_HINT_AT, now).apply()
-    }
-
-    private fun lanLine(b: LanBinding): String = when {
-        b.revoked -> "「${b.name}」上解除了绑定，点这里重新扫码"
-        else -> "已绑定「${b.name}」 · " + when (link?.lanPhase) {
-            LinkService.LanPhase.CONNECTED -> "正用局域网连着"
-            LinkService.LanPhase.CONNECTING -> "正在连接…"
-            else -> "在同一个网络里会自动连上"
-        }
-    }
-
-    private fun forgetLan(b: LanBinding) {
-        overlays.dialog(
-            "解除局域网绑定？",
-            "这部手机不再用局域网连「${b.name}」，蓝牙照常能用。以后想用要重新扫码。\n电脑上的绑定记录在电脑的「设置 → 扫码连接」里删。",
-            listOf(Btn("取消"), Btn("解除", Style.DANGER) {
-                link?.forgetLan() ?: LanBinding.save(this, null)
-                updateBanner()
-                menuSheet?.refresh()
-                say("已解除局域网绑定")
-            }),
-        )
     }
 
     /** 语音按钮用：有麦克风权限返回 true；没有就先说明用途再申请（这次按不了，授权后再按）。 */
@@ -811,6 +818,55 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         setup.showPicker { address, name -> chooseComputer(address, name) }
     }
 
+    // ───────── 我的电脑：顶栏按钮、切换（ComputerSwitcher） ─────────
+
+    private val switcherHost = object : ComputerSwitcher.Host {
+        override fun linkStatus() = status
+        override fun switchTo(pc: Computer) = this@MainActivity.switchTo(pc)
+        override fun pickBluetooth() = pickComputer()
+        override fun scanComputer() = this@MainActivity.scanComputer()
+        override fun say(text: String) = this@MainActivity.say(text)
+    }
+
+    private fun onPcButton() {
+        Ui.buzz(pcButton, Ui.Buzz.TAP)
+        if (Computers.load(this).list.isEmpty()) scanComputer() else showComputers()
+    }
+
+    private fun showComputers() {
+        if (editor != null) return
+        switcher.show()
+    }
+
+    private fun updatePcButton() {
+        val st = Computers.load(this)
+        pcButton.set(if (st.list.isEmpty()) null else st.current()?.name ?: "选择电脑")
+    }
+
+    /** 列表、正在用的那台、名字变了（这里切的、扫码加的、服务认出了电脑名） */
+    private fun onComputersChanged() {
+        updatePcButton()
+        updateBanner()
+        showBase(animate = false)
+        switcher.refresh()
+        menuSheet?.refresh()
+        // 这里不启动连接：点了「断开」、教程开着时改名、移除不该连上去。切换、选电脑、扫码各自会启动
+        if (pendingLayoutPc != null) applyConfig() // 离线调好的布局只盖在那台电脑上
+    }
+
+    /** 一键切到 pc：蓝牙、局域网都改连它（服务里 applyTarget 断开旧的、连新的） */
+    private fun switchTo(pc: Computer) {
+        val prev = Computers.load(this).current
+        if (pc.id == prev) return
+        Computers.select(this, pc.id)
+        switching = pc to prev
+        main.removeCallbacks(switchTimeout)
+        main.postDelayed(switchTimeout, SWITCH_TIMEOUT_MS)
+        overlays.notice("正在切换到「${pc.name}」…", ms = SWITCH_TIMEOUT_MS)
+        startLinkIfReady()
+        link?.retryNow()
+    }
+
     // ───────── 界面骨架：顶栏 + 横幅 + 页面标签 + 网格，最上面一层是浮层 ─────────
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -824,6 +880,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         overlays = Overlays(overlayHost)
         setup = Setup(this, overlays)
         updater = Updater(this, overlays)
+        switcher = ComputerSwitcher(this, overlays, palette, switcherHost)
         // 自己处理系统栏和键盘占的位置：键盘弹出时网格整体变矮，模块都还在键盘上方
         if (Build.VERSION.SDK_INT >= 30) {
             @Suppress("DEPRECATION") // Android 15 起默认就是这样；11～14 还需要显式设置
@@ -866,6 +923,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             background = Ui.round(palette.tile, dp(11).toFloat(), Ui.hairline(context).toInt(), palette.line)
             visibility = View.GONE
         }
+        pcButton = PcButton(this, palette).apply { setOnClickListener { onPcButton() } }
         readout = Ui.Readout(this, palette)
         recPill = TextView(this).apply {
             text = "● 录音中 · 点此结束"
@@ -904,6 +962,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), 0, 0, 0)
             addView(brand, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            addView(pcButton, LinearLayout.LayoutParams(WRAP_CONTENT, dp(30)).apply { marginStart = dp(10) })
             addView(profileTag, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(8) })
             addView(cancelButton, LinearLayout.LayoutParams(WRAP_CONTENT, dp(30)))
             addView(statusBox, LinearLayout.LayoutParams(0, dp(32), 1f).apply { marginStart = dp(12) })
@@ -1017,7 +1076,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     private fun applyConfig(force: Boolean = false, animate: Boolean = true) {
         if (editor != null) return // 调整布局时不重建，调完再用
         val serialized = config.toString()
-        val pendingText = pendingLayout?.toString().orEmpty()
+        val pendingText = pendingLayoutHere()?.toString().orEmpty()
         if (!force && serialized == configText && pendingText == configPendingText) return
         configText = serialized
         configPendingText = pendingText
@@ -1213,7 +1272,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
 
     /** 离线时调好、还没存到电脑上的布局：先盖在电脑的配置上显示 */
     private fun withPendingLayout(layout: JSONObject): JSONObject {
-        val pending = pendingLayout ?: return layout
+        val pending = pendingLayoutHere() ?: return layout
         val cells = pending.optJSONArray("modules") ?: return layout
         val copy = JSONObject(layout.toString())
         val pages = copy.optJSONArray("pages") ?: return layout
@@ -1268,9 +1327,15 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         status = s
         statusKnown = true
         // 记下电脑的名字（旧版没存过，菜单里不然只能显示蓝牙地址）
-        if (s.connected && !s.lan && !s.pcName.isNullOrBlank() && savedName() != s.pcName) prefs.edit().putString(KEY_PC_NAME, s.pcName).apply()
+        val switched = switching
         if (s.connected && !was.connected) {
-            if (wasKnown) {
+            if (switched != null) {
+                // 刚切换：黑卡片「正在切换…」换成「已连上」
+                switching = null
+                main.removeCallbacks(switchTimeout)
+                overlays.notice("已连上「${switched.first.name}」", ms = 1600)
+                Ui.buzz(root, Ui.Buzz.TAP)
+            } else if (wasKnown) {
                 // 重新连上：闪一下连的是哪台电脑，轻震一下
                 flash("已连接 · ${pcName() ?: "电脑"}", 2200)
                 Ui.buzz(root, Ui.Buzz.TAP)
@@ -1281,8 +1346,10 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         if (!s.connected && (was.connected || !wasKnown)) offlineSince = SystemClock.uptimeMillis()
         updateOfflineLook()
         updateBanner()
+        updatePcButton()
         showBase(animate = true)
         menuSheet?.refresh()
+        switcher.refresh()
         pendingSheet?.refresh()
         setup.refreshOnboarding() // 教程开着时，扫码那页跟着局域网连没连上变
     }
@@ -1307,8 +1374,9 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
     /** 平时顶栏右边显示的：连上了是电脑名，没连上是为什么；调整布局时是操作提示 */
     private fun baseText(): String = when {
         editor != null -> editHint()
-        connected -> "已连接 · ${pcName() ?: "电脑"}"
+        connected -> "已连接 · ${status.via ?: "电脑"}"
         status.phase == Phase.OFF && link?.stoppedByUser == true -> "已断开"
+        Computers.current(this) == null -> "" // 左边的按钮写着「＋ 添加电脑」
         !hasBluetoothPermission() && !lanBound() -> "需要蓝牙权限"
         (savedAddress() == null && !lanBound()) || status.phase == Phase.NO_DEVICE -> "还没选电脑"
         status.phase == Phase.BT_OFF -> "手机蓝牙没开"
@@ -1345,7 +1413,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             !connected && savedAddress() == null && LanBinding.load(this)?.revoked == true ->
                 BannerSpec("lanoff", "电脑上解除了绑定", "重新扫码就能再连", "扫码") { scanComputer() }
             !hasBluetoothPermission() && !lanBound() -> BannerSpec("perm", "需要「附近的设备」权限", "蓝牙连电脑要用，只连你选的那台", "允许") { askBluetoothPermission() }
-            savedAddress() == null && !lanBound() -> BannerSpec("nodev", "还没选电脑", "选一台，或扫电脑上的二维码", "选择电脑") { pickComputer() }
+            Computers.load(this).list.isEmpty() -> BannerSpec("nodev", "还没有电脑", "扫电脑上蒜鸟的二维码", "扫码") { scanComputer() }
+            savedAddress() == null && !lanBound() -> BannerSpec("nopc", "没在用电脑", "选一台接着用", "选择") { showComputers() }
             connected && mappingPaused -> BannerSpec("paused", "按键已暂停", "触控板和语音照常", "恢复", paused = true) { requestEnabled(true) }
             connected -> null
             status.phase == Phase.OFF && link?.stoppedByUser == true ->
@@ -1357,7 +1426,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
                 null
             }
             else -> BannerSpec(
-                "offline", "未连接电脑",
+                "offline", pcName()?.let { "没连上「$it」" } ?: "未连接电脑",
                 pendingLine ?: if (status.phase == Phase.CONNECTING) "正在连接…" else "电脑上开着蒜鸟就会连上",
                 "重试", busy = status.phase == Phase.CONNECTING, onBody = openPending,
             ) { retryLink() }
@@ -1649,25 +1718,15 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         }
 
         divider()
-        row("选择电脑", "蓝牙 · " + (savedName() ?: if (savedAddress() != null) "已选一台电脑" else "还没选")) {
+        val pcs = Computers.load(this@MainActivity).list.size
+        row("切换电脑", if (pcs == 0) "还没有电脑" else (savedName() ?: "没在用") + " · 共 $pcs 台") {
             s.dismiss()
-            pickComputer()
+            showComputers()
         }
-        val lan = LanBinding.load(this@MainActivity)
-        row("扫码连接电脑", if (lan == null) "蓝牙、局域网都能连" else lanLine(lan)) {
-            s.dismiss()
-            scanComputer()
-        }
-        if (lan != null && !lan.revoked && BackgroundGuide.worthOpening(this@MainActivity)) {
+        if (lanBound() && BackgroundGuide.worthOpening(this@MainActivity)) {
             row("后台保持局域网", "息屏也不断开") {
                 s.dismiss()
                 openBatterySettings()
-            }
-        }
-        if (lan != null) {
-            row("解除局域网绑定", "手机上忘掉「${lan.name}」", trailing = null) {
-                s.dismiss()
-                forgetLan(lan)
             }
         }
         row("使用教程", "怎么连电脑、怎么用") {
@@ -1945,7 +2004,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         val msg = JSONObject().put("t", "layout").put("page", editPageId).put("modules", modules)
         if (!connected || link?.send(msg) != true) {
             pendingLayout = msg
-            prefs.edit().putString(KEY_PENDING_LAYOUT, msg.toString()).apply()
+            pendingLayoutPc = Computers.load(this).current
+            prefs.edit().putString(KEY_PENDING_LAYOUT, msg.toString()).putString(KEY_PENDING_LAYOUT_PC, pendingLayoutPc).apply()
             endEditing()
             say("先存在手机上了，连上电脑后自动保存")
             Ui.buzz(root, Ui.Buzz.CONFIRM)
@@ -1959,7 +2019,7 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
 
     /** 连上了：把离线时调好的布局发给电脑 */
     private fun sendPendingLayout() {
-        val msg = pendingLayout ?: return
+        val msg = pendingLayoutHere() ?: return
         if (layoutInFlight) return
         if (link?.send(msg) == true) {
             layoutInFlight = true
@@ -1976,7 +2036,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
             layoutInFlight = false
             main.removeCallbacks(pendingLayoutTimeout)
             pendingLayout = null
-            prefs.edit().remove(KEY_PENDING_LAYOUT).apply()
+            pendingLayoutPc = null
+            prefs.edit().remove(KEY_PENDING_LAYOUT).remove(KEY_PENDING_LAYOUT_PC).apply()
             if (ok) {
                 flash("手机上调的布局已保存到电脑", 2200)
             } else {
@@ -2041,8 +2102,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
 
     /** 顶栏在「平时」和「调整布局」之间切换：新出现的按钮从下面淡入 */
     private fun showEditBar(on: Boolean) {
-        val appear = if (on) listOf(cancelButton, snapSwitch, doneButton) else listOf(brand, menuButton)
-        val vanish = if (on) listOf(brand, menuButton, profileTag) else listOf(cancelButton, snapSwitch, doneButton)
+        val appear = if (on) listOf(cancelButton, snapSwitch, doneButton) else listOf(brand, pcButton, menuButton)
+        val vanish = if (on) listOf(brand, pcButton, menuButton, profileTag) else listOf(cancelButton, snapSwitch, doneButton)
         vanish.forEach { it.visibility = View.GONE }
         appear.forEach { v ->
             v.visibility = View.VISIBLE
@@ -2481,8 +2542,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         private const val KEY_PENDING_TEXT = "pending_text"
         /** 没连上时调好、还没存到电脑上的布局 */
         private const val KEY_PENDING_LAYOUT = "pending_layout"
+        private const val KEY_PENDING_LAYOUT_PC = "pending_layout_pc"
         /** 选电脑时记下的电脑名 */
-        private const val KEY_PC_NAME = "pc_name"
         private const val KEY_GUIDE_SEEN = "gesture_guide_seen"
         private const val KEY_BT_ASKED = "bt_permission_asked"
         private const val KEY_MIC_ASKED = "mic_permission_asked"
@@ -2505,6 +2566,8 @@ class MainActivity : Activity(), LinkService.Listener, TouchpadView.Sink, Setup.
         private const val REQ_SCAN = 8
         private const val NOT_OUR_QR = "这不是蒜鸟的二维码：在电脑蒜鸟「设置 → 扫码连接」里点「显示二维码」"
         /** 没连上超过这么久才出横幅、顶栏才说「未连接电脑」 */
+        /** 切换电脑后这么久还没连上：说没连上，给「换回」 */
+        private const val SWITCH_TIMEOUT_MS = 8000L
         private const val OFFLINE_GRACE_MS = 1500L
         /** 闲置这么久把屏幕调暗 */
         private const val DIM_AFTER_MS = 2 * 60_000L

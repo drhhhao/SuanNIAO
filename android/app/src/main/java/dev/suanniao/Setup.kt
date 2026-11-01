@@ -119,7 +119,7 @@ class Setup(private val host: Host, private val overlays: Overlays) {
             }
         }
         sheet = overlays.sheet build@{
-            header("选择电脑", "配对过的电脑")
+            header("手机蓝牙选择", "配对过的电脑")
             if (!host.hasBluetoothPermission()) {
                 row("允许「附近的设备」权限", "用蓝牙连电脑要这个权限") {
                     sheet.dismiss()

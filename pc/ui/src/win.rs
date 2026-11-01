@@ -947,7 +947,7 @@ pub fn move_legacy_autostart() {
 pub struct Bluetooth {
     /// 找到了开着的蓝牙
     pub radio: bool,
-    /// 这台电脑在蓝牙里的名字（手机的「选择电脑」里列的就是它）；没找到蓝牙时是空的
+    /// 这台电脑在蓝牙里的名字（手机的「手机蓝牙选择」里列的就是它）；没找到蓝牙时是空的
     pub name: String,
     /// 配对过的手机的名字
     pub phones: Vec<String>,

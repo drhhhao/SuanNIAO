@@ -132,8 +132,10 @@ class LinkService : Service() {
         @Volatile var closed = false
         /** 发了心跳还没收到任何回音的起点（0 = 收到过了）：局域网太久没回音就当断了 */
         @Volatile var awaitSince = 0L
-        /** 电脑 hello 里的编号（旧版电脑端没有） */
+        /** 电脑 hello 里的编号（旧版电脑端没有）；局域网连上时先填绑定的编号 */
         @Volatile var pcId: String? = null
+        /** 蓝牙连的电脑地址 */
+        @Volatile var btAddr: String? = null
         /** 电脑说它正连着别的手机，马上会断开 */
         @Volatile var busy = false
         /** 电脑 hello 里说能收文件（旧版电脑端没有） */
@@ -224,6 +226,10 @@ class LinkService : Service() {
     @Volatile private var quiet = false
     @Volatile private var screenOn = true
     @Volatile private var address: String? = null
+    /** 正在用的那台电脑（Computers 的编号、名字） */
+    @Volatile private var targetPc: String? = null
+    @Volatile private var targetName: String? = null
+    private val computersChanged: () -> Unit = { main.post { applyTarget() } }
     /** 正在连的电脑的蓝牙名 */
     @Volatile private var deviceName: String? = null
     private var foreground = false
@@ -439,6 +445,60 @@ class LinkService : Service() {
         }
         thread(name = "link-writer", isDaemon = true) { writeLoop() }
         main.post(heartbeat)
+        Computers.listen(computersChanged)
+        applyTarget()
+    }
+
+    /**
+     * 正在用的电脑换了（切换、扫码加了一台、移除、解除局域网）：蓝牙、局域网连的不是它就断开，马上连它。
+     * 断开前先让旧电脑松开按着的键
+     */
+    private fun applyTarget() {
+        val cur = Computers.current(this)
+        val pcChanged = cur?.id != targetPc
+        val nameChanged = cur?.name != targetName
+        targetPc = cur?.id
+        targetName = cur?.name
+        address = cur?.bt
+        if (pcChanged) {
+            pcHost = null
+            pcApp = null
+            deviceName = null
+            lanPcName = cur?.lan?.name
+            quiet = false
+            lanQuiet = false
+        }
+        // 蓝牙：地址不是正在用那台的，或者 hello 说了是另一台电脑（��号对不上）
+        val bt = btConn?.takeIf { c ->
+            !c.btAddr.equals(cur?.bt, ignoreCase = true) ||
+                (cur != null && !cur.id.startsWith("bt:") && c.pcId != null && c.pcId != cur.id)
+        }
+        val lan = lanConn?.takeIf { c -> cur?.lan?.let { it.revoked || it.pc != c.pcId } ?: true }
+        if (bt != null || lan != null) {
+            // 先清掉按住的记录、马上不算连着（之后的消息不会再走旧连接，界面也不会先显示「已连接 · 新电脑」），
+            // 再让旧电脑松开按着的键，稍等写出去再真的关
+            synchronized(holdLock) {
+                heldKeys.clear()
+                heldButtons.clear()
+                pinned = null
+                if (bt != null && btConn === bt) btConn = null
+                if (lan != null && lanConn === lan) lanConn = null
+            }
+            if (lan != null) holdWifi(false)
+            val release = JSONObject().put("t", "release").toString()
+            listOfNotNull(bt, lan).forEach { write(it, release) }
+            linkLost()
+            main.postDelayed({ bt?.close(); lan?.close() }, 120)
+        }
+        if (pcChanged || bt != null || lan != null) {
+            if (running) retryNow()
+        }
+        if (pcChanged || nameChanged || bt != null || lan != null) {
+            // 名字变了也要刷新：状态里的名字是 targetName
+            status = Status(status.phase, null, status.lan, status.bt)
+            recompute()
+            updateNotification()
+        }
     }
 
     /** 电量广播很频繁（电压、温度变了也发）：只在百分比或充电状态变了时发给电脑 */
@@ -470,15 +530,9 @@ class LinkService : Service() {
             return START_NOT_STICKY
         }
         stoppedByUser = false
-        val requested = intent?.getStringExtra(EXTRA_ADDRESS) ?: prefs.getString(KEY_ADDRESS, null)
-        val changed = requested != address
-        address = requested
-        if (!running) {
-            startLoop()
-        } else if (changed) {
-            btConn?.close() // 换了电脑：断开旧的蓝牙连接，马上连新的
-            retryNow()
-        }
+        // 连哪台看 Computers（换了电脑由 applyTarget 断开旧的、连新的）
+        applyTarget()
+        if (!running) startLoop()
         when (intent?.action) {
             ACTION_PAUSE -> if (!requestEnabled(false)) showNote("未连接电脑，没法暂停按键")
             ACTION_RESUME -> if (!requestEnabled(true)) showNote("未连接电脑，没法恢复按键")
@@ -532,6 +586,7 @@ class LinkService : Service() {
         runCatching { unregisterReceiver(batteryReceiver) }
         runCatching { unregisterReceiver(bluetoothReceiver) }
         runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(wifiCallback) }
+        Computers.unlisten(computersChanged)
         lanKicks.offer(Unit)
         btConn?.close()
         lanConn?.close()
@@ -755,7 +810,14 @@ class LinkService : Service() {
                 s.connect()
                 if (!alive()) break
                 c = Conn(false, s, s.inputStream, s.outputStream)
+                c.btAddr = target
+                // 先登记再核对：连的时候切到了别的电脑，这条不要了。applyTarget 是先改 address 再看 btConn，
+                // 两边总有一边看得到对方，不会漏掉一条连着旧电脑的连接
                 btConn = c
+                if (!target.equals(address, ignoreCase = true)) {
+                    if (btConn === c) btConn = null
+                    throw java.io.IOException("target changed")
+                }
                 backoff = 1000L
                 quiet = false
                 greet(c)
@@ -849,9 +911,16 @@ class LinkService : Service() {
                 val now = LanBinding.load(this)
                 if (now == null || now.pc != binding.pc || now.phoneId != binding.phoneId) throw java.io.IOException("binding changed")
                 c = Conn(true, s, s.inputStream, s.outputStream)
+                c.pcId = binding.pc
                 val conn = c
                 thread(name = "lan-writer", isDaemon = true) { lanWriter(conn) }
+                // 先登记再核对一次（同蓝牙那边）：这期间切到了别的电脑就不要了
                 lanConn = c
+                val again = LanBinding.load(this)
+                if (again == null || again.pc != binding.pc || again.phoneId != binding.phoneId) {
+                    if (lanConn === c) lanConn = null
+                    throw java.io.IOException("binding changed")
+                }
                 lanPcName = binding.name
                 lanBackoff = 1000L
                 lanQuiet = false
@@ -924,7 +993,7 @@ class LinkService : Service() {
         thread(name = "lan-pair", isDaemon = true) {
             var lastError: Exception? = null
             // 同一台电脑重新扫码：带上原来的编号和令牌，电脑把旧记录换掉，不在手机列表里多出一条
-            val prev = LanBinding.load(this)?.takeIf { it.pc == qr.pc }?.let { old ->
+            val prev = Computers.load(this).byId(qr.pc)?.lan?.let { old ->
                 LanSecure.open(this, old.sealedToken)?.let { old.phoneId to it }
             }
             for (addr in qr.addrs) {
@@ -936,8 +1005,9 @@ class LinkService : Service() {
                         runCatching { s.close() }
                     }
                     val sealed = LanSecure.seal(this, paired.token)
-                    LanBinding.save(this, LanBinding(qr.pc, qr.name, qr.addrs, qr.port, qr.fp, paired.phoneId, sealed, lastAddr = addr))
-                    lanConn?.close() // 原来连着另一台电脑：换成这台
+                    // 记在这台电脑上并切过去（原来连着别的电脑就断开，见 applyTarget）。手机已经和它蓝牙配对过的话，蓝牙也连它
+                    Computers.attachLan(this, LanBinding(qr.pc, qr.name, qr.addrs, qr.port, qr.fp, paired.phoneId, sealed, lastAddr = addr), bondedBt(qr.bt))
+                    lanConn?.takeIf { it.pcId == qr.pc }?.close() // 同一台重新扫码：用新凭证重连
                     retryNow()
                     lanLog("扫码绑定成功：${qr.name}（$addr）")
                     main.post { listener?.onPairResult(true, "已绑定「${qr.name}」，以后在同一个网络里会自动连上") }
@@ -988,11 +1058,12 @@ class LinkService : Service() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_BT_PAIR).apply()
     }
 
-    /** 解除局域网绑定（只在手机上忘掉这台电脑；电脑上的记录在电脑的设置里删） */
-    fun forgetLan() {
-        LanBinding.save(this, null)
-        lanConn?.close()
-        lanKicks.offer(Unit)
+    /** 二维码里的蓝牙地址，手机已经和它配对过才算 */
+    @SuppressLint("MissingPermission")
+    private fun bondedBt(address: String?): String? {
+        if (address == null || !hasBluetoothPermission()) return null
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter ?: return null
+        return address.takeIf { runCatching { adapter.getRemoteDevice(it).bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(false) }
     }
 
     /**
@@ -1069,8 +1140,26 @@ class LinkService : Service() {
                     continue
                 }
                 "hello" -> {
-                    c.pcId = msg.optString("pc").ifBlank { null }
+                    val id = msg.optString("pc").ifBlank { null }
+                    val host = msg.optString("host").ifBlank { null }
                     c.files = msg.optBoolean("files", false)
+                    // 记下这台电脑的编号、名字。蓝牙这台原来和局域网那台记成了同一台、其实不是：拆开，这条蓝牙断开（见 applyTarget）
+                    val addr = c.btAddr
+                    if (id != null) c.pcId = id
+                    if (id != null && !c.lan && addr != null) {
+                        Computers.learnBt(this, addr, id, host)
+                        if (!addr.equals(Computers.current(this)?.bt, ignoreCase = true)) {
+                            // 是另一台电脑（拆出去了）：它的 hello、配置都不要，马上断开
+                            if (btConn === c) {
+                                btConn = null
+                                linkLost()
+                                recompute()
+                            }
+                            c.close()
+                            return
+                        }
+                    }
+                    if (id != null && c.lan && host != null) Computers.learnName(this, id, host)
                 }
                 // 发文件的确认：发送线程在等，不用经过主线程
                 "fileAck", "fileDone" -> {
@@ -1078,8 +1167,8 @@ class LinkService : Service() {
                     continue
                 }
             }
-            // 蓝牙连的是另一台电脑：它的配置、提示不要（布局会来回跳）
-            if (foreign(c)) continue
+            // 蓝牙连的是另一台电脑：它的配置、提示不要（布局会来回跳）；刚切走的那台（还没关掉）也不要
+            if (foreign(c) || (c !== btConn && c !== lanConn)) continue
             main.post { onMessage(msg) }
         }
     }
@@ -1126,9 +1215,9 @@ class LinkService : Service() {
         val port = msg.optInt("port", 0)
         if (addrs.isEmpty() || port !in 1..65535) return
         var changed = false
-        LanBinding.update(this) { cur ->
-            if (cur == null || msg.optString("pc") != cur.pc || msg.optString("fp") != cur.fp) return@update cur
-            if (addrs == cur.addrs && port == cur.port) return@update cur
+        Computers.updateLan(this, msg.optString("pc")) { cur ->
+            if (cur == null || msg.optString("pc") != cur.pc || msg.optString("fp") != cur.fp) return@updateLan cur
+            if (addrs == cur.addrs && port == cur.port) return@updateLan cur
             changed = true
             cur.copy(addrs = addrs, port = port)
         }
@@ -1184,11 +1273,11 @@ class LinkService : Service() {
         val lanUsable = lanPhase == LanPhase.CONNECTING || lanPhase == LanPhase.WAITING || lanPhase == LanPhase.CONNECTED
         val btUnusable = btPhase == Phase.NO_DEVICE || btPhase == Phase.NO_PERMISSION || btPhase == Phase.BT_OFF || btPhase == Phase.OFF
         val (phase, pc) = when {
-            lanOn -> Phase.CONNECTED to lanPcName
-            btOn -> Phase.CONNECTED to deviceName
-            !lanUsable -> btPhase to deviceName
-            btUnusable -> (if (lanPhase == LanPhase.CONNECTING) Phase.CONNECTING else Phase.WAITING) to lanPcName
-            else -> (if (btPhase == Phase.CONNECTING || lanPhase == LanPhase.CONNECTING) Phase.CONNECTING else Phase.WAITING) to (deviceName ?: lanPcName)
+            lanOn -> Phase.CONNECTED to (targetName ?: lanPcName)
+            btOn -> Phase.CONNECTED to (targetName ?: deviceName)
+            !lanUsable -> btPhase to (targetName ?: deviceName)
+            btUnusable -> (if (lanPhase == LanPhase.CONNECTING) Phase.CONNECTING else Phase.WAITING) to (targetName ?: lanPcName)
+            else -> (if (btPhase == Phase.CONNECTING || lanPhase == LanPhase.CONNECTING) Phase.CONNECTING else Phase.WAITING) to (targetName ?: deviceName ?: lanPcName)
         }
         setPhase(phase, pc, lanOn, btOn)
     }
@@ -1202,8 +1291,8 @@ class LinkService : Service() {
         main.post { listener?.onLinkStatus(s) }
     }
 
-    /** 电脑的名字：电脑 hello 里说的，没有就用局域网绑定时的名字、蓝牙名 */
-    fun pcLabel(): String? = pcHost ?: (if (lanConn != null) lanPcName else null) ?: deviceName ?: lanPcName
+    /** 电脑的名字：「我的电脑」里记的（用户改过名就是改的），没有就用电脑 hello 里说的、局域网绑定时的名字、蓝牙名 */
+    fun pcLabel(): String? = targetName ?: pcHost ?: (if (lanConn != null) lanPcName else null) ?: deviceName ?: lanPcName
 
     private fun notificationText(): String = when (status.phase) {
         Phase.CONNECTED -> "已连接 · ${pcLabel() ?: "电脑"}" + (status.via?.let { " · $it" } ?: "") + if (paused) " · 按键已暂停" else ""
@@ -1264,7 +1353,6 @@ class LinkService : Service() {
         // 日志标签、偏好文件名是改名前起的，不改（改了偏好文件名，选过的电脑、菜单里的设置都会丢）
         const val TAG = "SuanNIAO"
         const val PREFS = "suanniao"
-        const val KEY_ADDRESS = "pc_address"
         /** 扫码蓝牙配对后要带给电脑的口令：{addr, code, at} */
         private const val KEY_BT_PAIR = "bt_pair_code"
 

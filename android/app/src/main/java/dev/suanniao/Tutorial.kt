@@ -247,8 +247,8 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         nextLine.visibility = if (mode == null) View.GONE else View.VISIBLE
         pathNote.text = rich(
             when (mode) {
-                Mode.BT -> "想更快、传文件更方便：⋯ → **扫码连接电脑**，走局域网。"
-                Mode.LAN -> "没有网也想用：⋯ → 选择电脑 → **扫码配对新电脑**。"
+                Mode.BT -> "想更快、传文件更方便：点顶上的电脑名 → **扫码连接电脑**，走局域网。"
+                Mode.LAN -> "没有网也想用：点顶上的电脑名 → **扫码连接电脑**，蓝牙顺便配上。"
                 null -> ""
             },
         )
@@ -436,6 +436,12 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             para("要说很久，就按住往**上滑**锁定，之后可以松手，说完**点一下**结束。")
             tip("识别在手机上完成，录音不会上传。")
         }
+        page(SwitchScene(context), 0.52f) {
+            eyebrow("怎么用 · 换电脑")
+            title("点电脑名，换一台电脑")
+            para("「蒜鸟」旁边写着正在用哪台电脑。点它，选另一台，一两秒就连上。")
+            tip("扫码连的新电脑会自动加进来；行尾「⋯」能改名、移除。")
+        }
         page(MenuScene(context), 0.52f) {
             eyebrow("怎么用 · 更多")
             title("其他功能都在右上角的「⋯」里")
@@ -444,7 +450,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
         page(HelloScene(context, done = true), 0.56f, center = true) {
             title("准备好了！")
             para("以后只要电脑上开着蒜鸟，手机打开蒜鸟就会自动连上。", 14f)
-            doneNote = tip("还没选电脑也没关系，可以先看看界面，之后在顶上的提示条或 ⋯ 菜单里选。", 18f)
+            doneNote = tip("还没选电脑也没关系，可以先看看界面，之后点顶上的「＋ 添加电脑」。", 18f)
             pathNote = tip("", 10f)
         }
     }
@@ -1758,6 +1764,40 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             c.drawLine(cx - 5.5f * s, cy + 3.6f * s, cx + 5.5f * s, cy + 3.6f * s, line)
         }
 
+        /**
+         * 使用页的顶栏：「蒜鸟」、电脑按钮（电脑图标 + 名字 + 上下箭头）、右边连接方式、最右「⋯」。
+         * nameA：名字的透明度（换电脑时淡出淡入）；press：电脑按钮按下去。返回电脑按钮中间的 x（手指去点它）
+         */
+        protected fun topBar(l: Float, r: Float, cy: Float, name: String, status: String, a: Float, nameA: Float = a, press: Float = 0f): Float {
+            if (a <= 0f) return l
+            text("蒜鸟", l + 8f, cy + 3.2f, 9f, 900, Ui.alpha(palette.fg, a))
+            val pl = l + 30f
+            val pr = pl + textWidth(name, 5.4f, 800) + 21f
+            fill.color = Ui.alpha(Ui.blend(palette.tile, palette.fg, 0.08f * press), a)
+            rr(pl, cy - 6.5f, pr, cy + 6.5f, 6.5f, fill)
+            line.color = Ui.alpha(palette.line, a)
+            line.strokeWidth = 0.6f
+            rr(pl, cy - 6.5f, pr, cy + 6.5f, 6.5f, line)
+            line.color = Ui.alpha(palette.fg, a)
+            line.strokeWidth = 0.7f
+            rr(pl + 4.2f, cy - 2.4f, pl + 9.2f, cy + 1f, 0.5f, line)
+            c.drawLine(pl + 3.4f, cy + 2.3f, pl + 10f, cy + 2.3f, line)
+            textMid(name, pl + 12.5f, cy, 5.4f, 800, Ui.alpha(palette.fg, nameA), Paint.Align.LEFT)
+            line.color = Ui.alpha(palette.mut, a)
+            path.reset()
+            path.moveTo(pr - 6.6f, cy - 1f)
+            path.lineTo(pr - 5f, cy - 2.6f)
+            path.lineTo(pr - 3.4f, cy - 1f)
+            path.moveTo(pr - 6.6f, cy + 1f)
+            path.lineTo(pr - 5f, cy + 2.6f)
+            path.lineTo(pr - 3.4f, cy + 1f)
+            c.drawPath(path, line)
+            textMid(status, r - 15f, cy, 4.4f, 750, Ui.alpha(palette.sub, a), Paint.Align.RIGHT)
+            fill.color = Ui.alpha(palette.fg, a)
+            for (i in -1..1) c.drawCircle(r - 8f + 2.6f * i, cy, 0.9f, fill)
+            return (pl + pr) / 2f
+        }
+
         /** 输入框左上角压在边框上的小标签「电脑」 */
         protected fun legend(cx: Float, y: Float, a: Float) {
             if (a <= 0f) return
@@ -2886,7 +2926,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             line.color = Ui.alpha(palette.line, intro)
             line.strokeWidth = 1f
             rr(46f, 10f, 254f, 230f, 18f, line)
-            text("选择电脑", 62f, 37f, 12f, 900, Ui.alpha(palette.fg, intro))
+            text("手机蓝牙选择", 62f, 37f, 12f, 900, Ui.alpha(palette.fg, intro))
             text("配对过的电脑", 62f, 53f, 6.4f, 650, Ui.alpha(palette.sub, intro))
             val mine = shortName ?: fit(name ?: "我的笔记本", 8.5f, 750, 130f).also { shortName = it }
             val chosen = seg(1150f, 1250f, tt) * back
@@ -3484,8 +3524,138 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
 
     /** 右上角的「⋯」：点开是一张面板，调布局、暂停按键、换电脑、再看教程都在里面 */
     @SuppressLint("ViewConstructor")
+    /**
+     * 换电脑：点顶上的电脑名 → 「切换电脑」面板里点另一台 → 黑卡片「正在切换到…」→「已连上」
+     * （打板：xiaomi13\教程打板\多电脑切换\2-方案A-新页动画分镜.png）
+     */
+    private inner class SwitchScene(ctx: Context) : Scene(ctx, 5000f) {
+        private val screenClip = Path()
+
+        override fun render() {
+            val intro = ease(seg(0f, 500f))
+            val tt = loop(500f, 6600f)
+            c.save()
+            c.translate(0f, 12f * (1f - intro))
+            phoneBody(70f, 4f, 230f, 236f, 18f, intro, 5f)
+            screenClip.reset()
+            screenClip.addRoundRect(75f, 9f, 225f, 231f, 13f, 13f, Path.Direction.CW)
+            c.save()
+            c.clipPath(screenClip)
+            // 切过去以后名字换成第二台；一轮快完时再淡回第一台，接上下一轮
+            val switched = seg(2650f, 2700f, tt) * (1f - seg(6200f, 6500f, tt))
+            val back = seg(6200f, 6500f, tt)
+            val name = if (switched > 0f || (tt > 2700f && back < 0.5f)) SWITCH_TO else SWITCH_FROM
+            val nameA = intro * if (tt > 6200f) (if (back < 0.5f) 1f - 2f * back else 2f * back - 1f) else 1f
+            val connected = seg(3900f, 4000f, tt) * (1f - back)
+            val status = when {
+                tt in 2700f..3900f -> "正在连接…"
+                connected > 0f -> "已连接 · 蓝牙"
+                else -> "已连接 · 局域网"
+            }
+            val pillTap = hold(tt, 1100f, 1270f)
+            val pill = topBar(75f, 225f, 25f, name, status, intro, nameA, pillTap)
+            fill.color = Ui.alpha(palette.tile, intro)
+            rr(82f, 40f, 218f, 142f, 10f, fill)
+            fill.color = Ui.alpha(palette.mut, 0.4f * intro)
+            for (gx in 0 until 12) for (gy in 0 until 9) c.drawCircle(91f + 11f * gx, 48f + 11f * gy, 0.8f, fill)
+            fill.color = Ui.alpha(palette.tile, intro)
+            rr(82f, 150f, 218f, 222f, 10f, fill)
+            mic(150f, 180f, Ui.alpha(palette.fg, intro), 1.2f)
+            textMid("按住说话", 150f, 206f, 6f, 750, Ui.alpha(palette.sub, intro))
+            // 面板滑上来，点第二台，滑下去
+            val up = ease(seg(1250f, 1650f, tt)) * (1f - ease(seg(2600f, 2900f, tt)))
+            val rowTap = hold(tt, 2350f, 2500f)
+            if (up > 0f) sheet(up, seg(2450f, 2550f, tt), rowTap)
+            // 黑卡片：正在切换 → 已连上
+            val card = seg(2700f, 2900f, tt) * (1f - seg(5300f, 5600f, tt))
+            if (card > 0f) switchCard(card, connected, tt)
+            c.restore()
+            // 手指：先去点电脑名，再去点面板里第二台
+            val f1 = seg(350f, 550f, tt) * (1f - seg(1350f, 1550f, tt))
+            if (f1 > 0f) {
+                val k = ease(seg(400f, 1050f, tt))
+                finger(lerp(170f, pill, k), lerp(205f, 26f, k), pillTap, f1, 0.85f)
+            }
+            ripple(pill, 25f, seg(1100f, 1500f, tt), 6f, 18f)
+            val f2 = seg(1650f, 1800f, tt) * (1f - seg(2550f, 2750f, tt))
+            if (f2 > 0f) {
+                val k = ease(seg(1700f, 2250f, tt))
+                finger(lerp(200f, 170f, k), lerp(215f, 194f, k), rowTap, f2, 0.85f)
+            }
+            c.restore()
+        }
+
+        /** 「切换电脑」面板：两台电脑，第一台正在用；picked = 点了第二台以后「正在用」挪过去 */
+        private fun sheet(up: Float, picked: Float, press: Float) {
+            fill.color = Ui.alpha(0xFF000000.toInt(), 0.3f * up)
+            c.drawRect(75f, 9f, 225f, 231f, fill)
+            val y = lerp(236f, 128f, up)
+            fill.color = palette.tile
+            rr(75f, y, 225f, y + 120f, 12f, fill)
+            fill.color = Ui.alpha(palette.fg, 0.15f)
+            rr(140f, y + 5f, 160f, y + 7.5f, 1.25f, fill)
+            text("切换电脑", 84f, y + 22f, 8.5f, 900, palette.fg)
+            text("选哪台就连哪台", 84f, y + 32f, 5.2f, 650, palette.sub)
+            pcRow(y + 50f, SWITCH_FROM, if (picked > 0.5f) "局域网 · 今天用过" else "局域网 · 已连接", current = 1f - picked, press = 0f)
+            pcRow(y + 66f + 0f, SWITCH_TO, if (picked > 0.5f) "蓝牙 · 连接中…" else "蓝牙 · 昨天用过", current = picked, press = press)
+            // 底下两个按钮
+            line.color = palette.line
+            line.strokeWidth = 0.8f
+            fill.color = palette.tile
+            rr(82f, y + 88f, 147f, y + 101f, 6.5f, fill)
+            rr(82f, y + 88f, 147f, y + 101f, 6.5f, line)
+            textMid("手机蓝牙选择", 114.5f, y + 94.5f, 5.2f, 850, palette.fg)
+            fill.color = palette.fg
+            rr(153f, y + 88f, 218f, y + 101f, 6.5f, fill)
+            textMid("扫码连接电脑", 185.5f, y + 94.5f, 5.2f, 850, palette.tile)
+        }
+
+        private fun pcRow(cy: Float, name: String, sub: String, current: Float, press: Float) {
+            if (press > 0f) {
+                fill.color = Ui.alpha(palette.fg, 0.07f * press)
+                rr(79f, cy - 8f, 221f, cy + 8f, 6f, fill)
+            }
+            // 图标块：正在用的是黑底白电脑
+            fill.color = Ui.blend(Ui.blend(palette.tile, palette.fg, 0.07f), palette.fg, current)
+            rr(83f, cy - 6.5f, 96f, cy + 6.5f, 3.5f, fill)
+            line.color = Ui.blend(palette.fg, palette.tile, current)
+            line.strokeWidth = 0.8f
+            rr(86.5f, cy - 3f, 92.5f, cy + 1.2f, 0.6f, line)
+            c.drawLine(85.5f, cy + 2.8f, 93.5f, cy + 2.8f, line)
+            text(name, 101f, cy - 0.8f, 6.4f, 750, palette.fg)
+            text(sub, 101f, cy + 5.6f, 4.6f, 650, palette.sub)
+            if (current > 0f) {
+                fill.color = Ui.alpha(if (palette.dark) 0xFFC3F06A.toInt() else 0xFFDCF7A1.toInt(), current)
+                rr(184f, cy - 4f, 205f, cy + 4f, 4f, fill)
+                textMid("正在用", 194.5f, cy, 4.4f, 850, Ui.alpha(if (palette.dark) 0xFF1C2A06.toInt() else 0xFF3D5C0E.toInt(), current))
+            }
+            fill.color = palette.mut
+            for (i in -1..1) c.drawCircle(213f + 2.6f * i, cy, 0.8f, fill)
+        }
+
+        /** 顶栏下面的黑卡片：转圈「正在切换到…」，连上了打勾「已连上…」 */
+        private fun switchCard(a: Float, done: Float, tt: Float) {
+            val y = 33f + 5f * (1f - ease(a))
+            fill.color = Ui.alpha(palette.fg, a)
+            rr(80f, y, 220f, y + 15f, 7.5f, fill)
+            val ix = 89f
+            val cy = y + 7.5f
+            if (done < 1f) {
+                line.color = Ui.alpha(palette.tile, a * (1f - done))
+                line.strokeWidth = 1.1f
+                box.set(ix - 2.8f, cy - 2.8f, ix + 2.8f, cy + 2.8f)
+                c.drawArc(box, (tt * 0.5f) % 360f, 260f, false, line)
+                textMid("正在切换到「$SWITCH_TO」…", ix + 6f, cy, 5.4f, 800, Ui.alpha(palette.tile, a * (1f - done)), Paint.Align.LEFT)
+            }
+            if (done > 0f) {
+                check(ix, cy, 7f, seg(3950f, 4250f, tt), Ui.alpha(0xFF9BE03A.toInt(), a * done), 1.3f)
+                textMid("已连上「$SWITCH_TO」", ix + 6f, cy, 5.4f, 800, Ui.alpha(palette.tile, a * done), Paint.Align.LEFT)
+            }
+        }
+    }
+
     private inner class MenuScene(ctx: Context) : Scene(ctx, 3100f) {
-        private val rows = arrayOf("调整布局", "暂停按键", "选择电脑", "使用教程")
+        private val rows = arrayOf("调整布局", "暂停按键", "切换电脑", "使用教程")
         private val screenClip = Path()
 
         override fun render() {
@@ -3498,15 +3668,13 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             screenClip.addRoundRect(85f, 9f, 215f, 231f, 13f, 13f, Path.Direction.CW)
             c.save()
             c.clipPath(screenClip)
-            // 主界面：顶栏、触控板、语音键
-            text("蒜鸟", 95f, 28f, 9f, 900, Ui.alpha(palette.fg, intro))
+            // 主界面：顶栏（「⋯」在最右边）、触控板、语音键
             val tap = hold(tt, 1100f, 1270f)
             if (tap > 0f) {
                 fill.color = Ui.alpha(palette.fg, 0.08f * tap)
-                c.drawCircle(202f, 24.5f, 8f, fill)
+                c.drawCircle(207f, 24.5f, 8f, fill)
             }
-            fill.color = Ui.alpha(palette.fg, intro)
-            for (i in -1..1) c.drawCircle(202f + 4.5f * i, 24.5f, 1.4f, fill)
+            topBar(85f, 215f, 24.5f, SWITCH_FROM, "已连接 · 局域网", intro)
             fill.color = Ui.alpha(palette.tile, intro)
             rr(92f, 40f, 208f, 142f, 10f, fill)
             fill.color = Ui.alpha(palette.mut, 0.4f * intro)
@@ -3543,7 +3711,7 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             val fa = seg(350f, 550f, tt) * (1f - seg(1350f, 1650f, tt))
             if (fa > 0f) {
                 val k = ease(seg(400f, 1050f, tt))
-                finger(lerp(176f, 202f, k), lerp(205f, 26f, k), tap, fa, 0.85f)
+                finger(lerp(176f, 207f, k), lerp(205f, 26f, k), tap, fa, 0.85f)
             }
             c.restore()
         }
@@ -3569,6 +3737,10 @@ class Tutorial(private val host: Setup.Host, private val overlays: Overlays, pri
             Triple(GestureIcon.MIDDLE, "三指轻点", "中键"),
             Triple(GestureIcon.DRAG, "点一下再按住拖", "拖动"),
         )
+
+        /** 换电脑那页：从哪台换到哪台 */
+        const val SWITCH_FROM = "办公室电脑"
+        const val SWITCH_TO = "家里的电脑"
 
         /** 选电脑那幅画里另外两台 */
         val OTHERS = arrayOf("客厅的电脑", "办公室电脑")

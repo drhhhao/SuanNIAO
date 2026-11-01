@@ -6,7 +6,21 @@
 
 把小米 13 变成电脑的触控板、快捷键面板和语音输入。手机和电脑通过蓝牙连接；语音在手机上识别（本地模型，不用联网），只把文字发给电脑。方案见上一级目录的 `方案.md`。
 
-## 当前版本：电脑端 0.7.21 · 手机端 0.9.20
+## 当前版本：电脑端 0.7.22 · 手机端 0.9.21
+
+- 电脑端 0.7.22：只改了 `app.slint` 里教手机怎么连的文字（「＋ 添加电脑」/ 电脑名 →「扫码连接电脑」「手机蓝牙选择」），配合手机 0.9.21。
+
+- 手机端 0.9.21：多台电脑一键切换（用户 2026-11-01：扫码蓝牙连了另一台后，局域网还连着本机，「完全不知道哪个是哪个」）。打板在 `xiaomi13\界面打板\多电脑切换\`，用户选了顶栏方案 B（「蒜鸟」旁单独的电脑按钮，右边状态字只说连接方式）。
+  - 根因：蓝牙目标（偏好 `pc_address`）和局域网绑定（`lan_binding`）各存一份，互不知道；`active()` 局域网优先，蓝牙连的另一台只收心跳。
+  - `Computers.kt`：偏好 `computers`（数组）+ `current_pc`。每台 = 编号（电脑 hello / 二维码的 `pc`；只从蓝牙列表选过、还没连上的先记 `bt:地址`）、名字（`renamed` 后不再跟电脑改）、蓝牙地址、`LanBinding`、`usedAt`。旧的 `pc_address` / `pc_name` / `lan_binding` 第一次读时迁移（两项并成一台，和旧行为一样），然后删掉。
+  - `learnBt`：蓝牙 hello 带回电脑编号时，`bt:` 项改成真编号（已有同编号的就并进去，正在用就跟过去）；编号和这项不一样（迁移时并错了）就把蓝牙拆成单独一台，这条蓝牙随即被 `applyTarget` 断开。
+  - `LanBinding.load` = 正在用那台的绑定；`updateIfSame`、电脑推来的新地址按电脑编号改（`Computers.updateLan`）。`pairWith` 成功 = `attachLan` 并切过去（手机已和二维码里的蓝牙地址配对过就一起记上）；扫码蓝牙配对成功 = `attachBt(qr.pc, …)`。
+  - `LinkService.applyTarget()`（Computers 变了就调）：蓝牙地址、局域网电脑编号和正在用的不一致就先发 `release`、马上把 `btConn`/`lanConn` 置空（界面不会先显示「已连接 · 新电脑」），120 ms 后再关；`readLoop` 丢掉已经不是当前连接的消息。状态和通知里的名字用列表里的名字（`targetName`）。
+  - 界面：`ComputerSwitcher.kt`（`PcButton` + 「切换电脑」面板 + 改名 / 移除）；切换后黑卡片「正在切换到…」→「已连上」，8 秒没连上给「换回」。移除正在用的那台只断开，不自动连别的（打板时定的）。`Setup.showPicker` 的标题改成「手机蓝牙选择」。
+  - 电脑端不用改：电脑那边只看到这部手机断开了。
+  - 审查后补的：一个蓝牙地址只属于一台（`attachLan` 带蓝牙地址时也从别的项上拿掉）；蓝牙 hello 说的编号和正在用的不一样就断；连接线程「先登记连接再核对目标」，`applyTarget`「先改目标再看连接」，不会漏掉连着旧电脑的连接；hello 认出是另一台时在读线程里当场断开，它的配置不进界面；列表变了不自己启动连接（「断开」、教程里不会被连上）；离线调的布局记着是哪台电脑的（`pending_layout_pc`），切到别的电脑不发。
+  - 教程：用户选了打板方案 A（`xiaomi13\教程打板\多电脑切换\`），`Tutorial.kt` 在语音页和「⋯」页之间加 `SwitchScene`（点电脑名 → 面板点另一台 → 黑卡片），`Scene.topBar()` 画新顶栏（「⋯」页也用它），「⋯」页的行改成「切换电脑」；用户定了统一教「扫码连接电脑」（扫一次蓝牙、局域网都加上），「解除局域网绑定」不再有（在列表里移除整台）。README 加了「连好几台电脑」一节。
+  - 单元测试：`app/src/test/.../ComputersTest.kt`（`./gradlew testDebugUnitTest`，15 个），用内存里的 SharedPreferences；`testOptions.unitTests.isReturnDefaultValues` + 真的 org.json。
 
 - 电脑端 0.7.21 / 手机端 0.9.20：更新走国内的 Gitee 镜像（用户 2026-10-30 要的：国内连 GitHub 下载约 0.24 MB/s，Gitee 约 1.9 MB/s）。
   - Gitee 仓库 `drhhhao_0/SuanNIAO`，挂在企业空间「Admin」（`e.gitee.com/drhhhao`）下：普通的仓库设置页只能选私有 / 企业内部开源，公开要在 `https://e.gitee.com/drhhhao/repos/drhhhao_0/SuanNIAO/-/settings/danger_zone` → 可见性 → 外部开源（要账号手机收的短信验证码）。仓库里只有自动生成的 README，代码不同步，只放发行版。

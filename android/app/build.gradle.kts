@@ -13,8 +13,8 @@ android {
         applicationId = "dev.suanniao"
         minSdk = 28
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.9.20"
+        versionCode = 36
+        versionName = "0.9.21"
         // 只给 64 位 ARM 手机用，本地语音识别的原生库只打这一种，安装包小很多
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -46,6 +46,9 @@ android {
         // sherpa-onnx 的 C / C++ 接口库，Kotlin 走 JNI 用不到
         jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
     }
+
+    // 单元测试里 Android 的类都是空壳：调到了返回默认值，不抛异常（测试自己造 SharedPreferences）
+    testOptions { unitTests.isReturnDefaultValues = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -105,4 +108,7 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     // 扫码库申请相机权限时用到（ActivityCompat / ContextCompat）。只要它本身：带上依赖会多出协程、lifecycle 等好几 MB
     implementation("androidx.core:core:1.13.1") { isTransitive = false }
+    // 电脑上跑的单元测试（./gradlew testDebugUnitTest）：不进安装包。org.json 用真的，android.jar 里的只是空壳
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
